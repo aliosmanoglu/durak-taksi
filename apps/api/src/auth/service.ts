@@ -136,3 +136,19 @@ export async function refresh(deps: AuthDeps, refreshToken: string): Promise<Aut
   return issueTokens(deps.secrets, claims);
 }
 
+
+/**
+ * Hesabın TÜM oturumlarını (tüm cihazlarda) kapatır: token_version + 1 → mevcut access/refresh token'lar geçersiz.
+ * Yönetici tek hesaptır ve oturumu ortam değişkeniyle (ADMIN_TOKEN_VERSION) iptal edilir; burada desteklenmez.
+ */
+export async function logoutAllDevices(deps: AuthDeps, claims: TokenClaims): Promise<'driver' | 'stand'> {
+  if (claims.role === 'admin') {
+    throw errors.validation('Yönetici oturumu ADMIN_TOKEN_VERSION ortam değişkeniyle iptal edilir');
+  }
+  await deps.db
+    .updateTable(tableOf(claims.role))
+    .set((eb) => ({ token_version: eb('token_version', '+', 1) }))
+    .where('id', '=', claims.sub)
+    .execute();
+  return claims.role;
+}

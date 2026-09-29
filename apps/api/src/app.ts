@@ -61,8 +61,9 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   if (opts.auth) {
-    app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters()));
-    app.use(adminRoutes(opts.auth, opts.realtime ?? noopRealtime));
+    const realtime = opts.realtime ?? noopRealtime;
+    app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters(), realtime));
+    app.use(adminRoutes(opts.auth, realtime));
     app.use(standRoutes(opts.auth));
   }
 

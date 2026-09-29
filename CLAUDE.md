@@ -42,7 +42,7 @@ pnpm --filter @duraknet/api exec vitest run --project integration   # Docker ger
 - JWT HS256, access ve refresh için **ayrı secret** + `typ` claim'i (biri diğerinin yerine geçemez). Claim'ler: `sub`, `role`, `tv` (= hesabın `token_version`'ı).
 - `assertActiveSession` (service.ts) tek kapıdır: REST middleware'i, socket handshake'i ve `/auth/refresh` her seferinde DB'den durum + `token_version` kontrol eder. Bu yüzden askıya alma access token'ın 15 dk'sını beklemeden etkilidir. Askıya alma = `status='suspended'` + `token_version+1` tek UPDATE'te, ardından `realtime.disconnectAccount`.
 - Yeni hesap `pending` açılır; `pending`/`suspended` hesap giriş yapamaz ve socket'e bağlanamaz. Durum hatası yalnızca şifre doğrulandıktan sonra döner.
-- Refresh token rotasyonu ve logout ucu yok (MVP): refresh token süresi dolana veya `token_version` artana (askıya alma) kadar geçerli.
+- Refresh token rotasyonu yok (MVP): refresh token süresi dolana veya `token_version` artana kadar geçerli. `token_version`'ı artıran iki yol vardır: yönetici askıya alması ve **`POST /auth/logout`** (tüm cihazlardan çıkış). Cihaz bazlı oturum takibi bilinçli olarak yoktur: şoför ve durak tek telefondan çalışır; kayıp/çalıntı telefonda oturumu kapatmanın yolu başka cihazdan girip çıkış yapmaktır. Bir hesabı birden fazla cihazda ayrı ayrı yönetmek gerekirse Redis tabanlı oturum kaydı düşünülür (yeni tablo eklenmez).
 - **Bağlı socket'in ömrü access token'la sınırlıdır:** süre dolunca `auth_expired` gönderilir, 30 sn içinde `auth_refresh` gelmezse bağlantı kesilir. `auth_refresh` hesap durumunu yeniden kontrol eder; yani askıya alınan hesabın socket'i `disconnectAccount` kaçırsa bile en geç ~15 dk içinde düşer. Handshake ile odaya katılma arasındaki askıya alma yarışı için katıldıktan sonra durum bir kez daha kontrol edilir.
 - Şifreler `@node-rs/argon2` (argon2id; native derleme gerektirmez). Yönetici hash'i: `pnpm --filter @duraknet/api hash-password` (şifre stdin'den okunur).
 - Kimlik uçlarında hız sınırları ayrıdır (`auth/limits.ts`): kayıt (IP), giriş (IP **ve** hesap bazlı, yalnızca başarısız denemeler sayılır), refresh (IP, gevşek: mobil CGNAT'ta çok şoför aynı IP'yi paylaşır). Üretimde Redis store; `createApp` varsayılanı bellek içidir ve yalnızca test içindir.
@@ -57,6 +57,7 @@ pnpm --filter @duraknet/api exec vitest run --project integration   # Docker ger
 | `POST /auth/stand/register` | — | `pending` açılır |
 | `POST /auth/login` | — | `{ role: 'driver', phone, password }` · `{ role: 'stand' \| 'admin', username, password }` |
 | `POST /auth/refresh` | — | `{ refreshToken }` |
+| `POST /auth/logout` | driver, stand | Hesabın tüm oturumlarını kapatır (`token_version+1`) ve açık socket'leri keser. Yönetici için 400: admin oturumu `ADMIN_TOKEN_VERSION` ile iptal edilir |
 | `GET /me` | herhangi | |
 | `PATCH /stands/me/settings` | stand | `{ initialRadiusM, maxRadiusM }` |
 | `GET /admin/drivers`, `GET /admin/stands` | admin | `?status=pending` |
