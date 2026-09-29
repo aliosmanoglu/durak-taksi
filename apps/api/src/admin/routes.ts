@@ -5,12 +5,13 @@ import { requireAuth } from '../auth/middleware';
 import type { AuthDeps } from '../auth/service';
 import { latOf, lngOf } from '../db';
 import { errors, parseBody } from '../http/errors';
+import type { PresenceService } from '../presence/service';
 import type { Realtime } from '../realtime';
 
 const listQuery = z.object({ status: z.enum(ACCOUNT_STATUSES).optional() });
 const idParam = z.object({ id: z.uuid() });
 
-export function adminRoutes(deps: AuthDeps, realtime: Realtime): Router {
+export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService): Router {
   const r = Router();
   r.use('/admin', requireAuth(deps, 'admin'));
 
@@ -69,7 +70,9 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime): Router {
   });
 
   // Askıya alma: durum + token_version tek UPDATE'te değişir → tüm refresh/access token'lar anında geçersiz.
-  // Ardından açık socket'ler kesilir.
+  // Ardından açık socket'ler kesilir ve şoför GEO'dan çıkarılır (sweeper'ı beklemeden aramalara girmesin).
+  // Sıra: önce socket kesilir (yeni event gelmesin), sonra forceOffline. forceOffline hata verirse istek
+  // 500 döner ama askıya alma PG'de commit edilmiştir; tekrar denemek idempotenttir.
   r.post('/admin/drivers/:id/suspend', async (req, res) => {
     const { id } = parseBody(idParam, req.params);
     const row = await deps.db
@@ -80,6 +83,7 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime): Router {
       .executeTakeFirst();
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('driver', id);
+    await presence?.forceOffline(id);
     res.json({ ok: true, data: row });
   });
 

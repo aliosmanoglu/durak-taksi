@@ -19,7 +19,7 @@ let httpServer: Server;
 let url: string;
 
 beforeAll(async () => {
-  const { attach } = createRealtime(deps, pino({ level: 'silent' }), { corsOrigin: '*' });
+  const { attach } = createRealtime(deps, pino({ level: 'silent' }), { corsOrigin: '*', presence: null });
   httpServer = createServer(createApp());
   attach(httpServer);
   await new Promise<void>((r) => httpServer.listen(0, r));
