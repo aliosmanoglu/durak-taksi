@@ -9,3 +9,5 @@ allowBuilds:
   cpu-features: false
   ssh2: false
   protobufjs: false
+  # bullmq'nun (msgpackr) isteğe bağlı native hızlandırıcısı; yoksa saf JS'e düşer, gerek yok.
+  msgpackr-extract: false

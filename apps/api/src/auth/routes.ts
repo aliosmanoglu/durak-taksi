@@ -9,10 +9,16 @@ import { latOf, lngOf } from '../db';
 import { errors, parseBody } from '../http/errors';
 import type { AuthLimiters } from './limits';
 import { authOf, requireAuth } from './middleware';
+import type { PresenceService } from '../presence/service';
 import type { Realtime } from '../realtime';
 import { login, logoutAllDevices, refresh, registerDriver, registerStand, type AuthDeps } from './service';
 
-export function authRoutes(deps: AuthDeps, limits: AuthLimiters, realtime: Realtime): Router {
+export function authRoutes(
+  deps: AuthDeps,
+  limits: AuthLimiters,
+  realtime: Realtime,
+  presence?: PresenceService,
+): Router {
   const r = Router();
 
   r.post('/auth/driver/register', limits.register, async (req, res) => {
@@ -34,11 +40,13 @@ export function authRoutes(deps: AuthDeps, limits: AuthLimiters, realtime: Realt
     res.json({ ok: true, data: await refresh(deps, refreshToken) });
   });
 
-  // Tüm cihazlardan çıkış: token_version artar, açık socket'ler kesilir. Çağıran kendi (geçerli) token'ıyla gelir.
+  // Tüm cihazlardan çıkış: token_version artar, açık socket'ler kesilir, şoför GEO'dan çıkarılır.
+  // Çağıran kendi (geçerli) token'ıyla gelir.
   r.post('/auth/logout', requireAuth(deps), async (_req, res) => {
     const claims = authOf(res);
     const role = await logoutAllDevices(deps, claims);
     realtime.disconnectAccount(role, claims.sub);
+    if (role === 'driver') await presence?.forceOffline(claims.sub);
     res.json({ ok: true });
   });
 

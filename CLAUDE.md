@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Komutlar
 
-pnpm workspace monorepo (Node ≥ 20, pnpm 12). Kökten çalıştırılır:
+pnpm workspace monorepo (pnpm 12; Node ≥ 20 çalışma zamanı için, **testler Node ≥ 22.19 ister**: `testcontainers` → `undici@8`; CI ve yerel geliştirme Node 24). Kökten çalıştırılır:
 
 ```bash
 pnpm install
@@ -23,7 +23,11 @@ pnpm --filter @duraknet/api exec vitest run test/health.test.ts
 pnpm --filter @duraknet/api exec vitest run -t "503 döner"
 pnpm --filter @duraknet/api exec vitest run --project unit          # Docker gerektirmez
 pnpm --filter @duraknet/api exec vitest run --project integration   # Docker gerekir
+pnpm --filter @duraknet/worker test                                  # sweeper; Docker gerekir (yalnızca Redis)
+pnpm dev:worker                                                      # veya: pnpm --filter @duraknet/worker dev
 ```
+
+Faz 2 yük betiği (CI dışı; iki API node'u aynı PG + Redis'e bağlı çalışırken): `pnpm --filter @duraknet/api exec tsx --env-file=../../.env scripts/loadtest-presence.ts` — kullanım ve ölçüm sınırları dosyanın başında.
 
 - **Testler:** `apps/api/vitest.config.ts` iki proje tanımlar. `unit`: `test/**/*.test.ts`. `integration`: `test/**/*.integration.test.ts`; `test/helpers/containers.ts` (globalSetup) çalıştırma başına **bir** PostGIS + Redis konteyner çifti başlatır, migration'ı node-pg-migrate `runner` ile uygular ve adresleri `inject` ile verir. `test/helpers/app.ts` → `startTestApp()` uygulamayı server.ts ile aynı sırada kurar. Testler birbirinden bağımsızdır: her test benzersiz telefon/plaka/kullanıcı adıyla kendi hesabını açar; IP bazlı limitlere takılmamak için istekler rastgele `X-Forwarded-For` taşır (`trustProxy: 'loopback'`).
 - **Yerel geliştirme:** `docker compose up -d` → PostGIS **5433**, Redis **6380** (makinedeki yerel PG 5432 ve eski Redis 6379 ile çakışmasın diye). Testler bu servisleri kullanmaz. Windows'ta Git Bash'te `docker` PATH'te olmayabilir: `/c/Program Files/Docker/Docker/resources/bin`.
@@ -35,7 +39,25 @@ pnpm --filter @duraknet/api exec vitest run --project integration   # Docker ger
 
 ## Mevcut durum
 
-**Faz 1 (kimlik & temel veri) tamamlandı; kabul kriteri gerçek PostGIS + Redis üzerinde entegrasyon testleriyle doğrulandı** (`apps/api/test/auth.integration.test.ts`, `rate-limit.integration.test.ts`). Test edilmeyenler: `auth_expired` zamanlayıcısı, handshake/askıya alma yarışı, çok node'lu `disconnectAccount` (redis-adapter yok), hesap bazlı dışındaki hız sınırları. Faz 2+ (konum, dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef tasarımdır. `apps/stand-panel` ve `apps/driver-mobile` yer tutucudur.
+**Faz 1 (kimlik & temel veri) tamamlandı; kabul kriteri gerçek PostGIS + Redis üzerinde entegrasyon testleriyle doğrulandı** (`apps/api/test/auth.integration.test.ts`, `rate-limit.integration.test.ts`). Test edilmeyenler: `auth_expired` zamanlayıcısı, handshake/askıya alma yarışı, hesap bazlı dışındaki hız sınırları.
+
+**Faz 2 backend'i (şoför varlığı & konum) tamamlandı; mobil kısmı yapılmadı.** Testler: `apps/api/test/presence.integration.test.ts`, `apps/worker/test/sweeper.integration.test.ts`. Kabul kriteri durumu:
+- "Bağlantısı düşen şoför ≤ 75 sn içinde GEO'dan çıkar": doğrulandı (eşik 60 sn + tarama 10 sn = en kötü 70 sn; testte simüle saatle ve kısaltılmış eşiklerle gerçek zamanda).
+- "500 şoför / 2 node / p95 < 50 ms": **kesin ölçülmedi.** Yerel yük testinde (2 node, 500 şoför, 60 sn) 9 783 güncellemede 0 kayıp; gönderimden Redis'te görünmeye p95 110 ms (100 ms örnekleme dahil üst sınır). Sunucu içi süre ölçülmüyor; kesin p95 Faz 5'te `driver_location_update` handler'ına `prom-client` histogramı eklenerek alınacak.
+- Mobil (aktif/pasif toggle, arka plan konumu, yeniden bağlanma) yapılmadı: `apps/driver-mobile` ve `apps/stand-panel` yer tutucudur. Sıra: `ekran-tasarimcisi` → `frontend-gelistirici`.
+
+Faz 3+ (dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef tasarımdır.
+
+### Şoför varlığı (`apps/api/src/presence/`, `apps/worker/src/sweeper.ts`)
+- Redis anahtarları ve zamanlamalar tek yerde: `packages/shared/src/redis.ts` (`redisKeys`, `PRESENCE`). Konum PG'ye yazılmaz.
+- Durum okuyup yazan her işlem (online, offline, konum, sweep) **Lua ile atomiktir**; "status oku → MULTI" kalıbı kullanılmaz (arada gelen offline/sweep şoförü GEO'ya geri yazar). Heartbeat skoru ve `updatedAt` sunucu saatiyle yazılır; istemcinin `ts`'ine güvenilmez.
+- Konum throttle'ı Redis anahtarının TTL'ine dayanır (`SET NX PX`); offline şoförün güncellemesi throttle tüketmez. Offline şoförden konum gelirse sunucu `session_sync` (`driverStatus: 'offline'`) gönderir: sweeper'ın düşürdüğü ama socket'i bağlı kalan şoför "Aktif" görünüp çağrı alamaz halde kalmaz.
+- Socket kopması presence'a dokunmaz (mobil ağ toleransı); temizliği sweeper yapar. Şoför askıya alınınca veya `/auth/logout`'ta `disconnectAccount` → `forceOffline` (GEO'dan anında çıkar). `driver_go_online` Lua'dan sonra hesap durumunu tekrar kontrol eder (askıya alma yarışı).
+- `createRealtime` `presence`'ı zorunlu alır (`null` yalnızca kimlik testleri içindir); `createApp`'te `auth` verildiğinde zorunludur.
+- **`socket.data` yalnızca JSON'a çevrilebilir veri tutar** (şu an sadece `auth` claim'leri): redis-adapter onu node'lar arası `fetchSockets` yanıtında serileştirir. Zamanlayıcı gibi nesneler socket üzerinde Symbol anahtarıyla tutulur (`realtime.ts` → `timersOf`); test 7c bunu korur.
+- Sweeper BullMQ job scheduler'ıyla (`presence-sweep`) çalışır; çok replikada her tikte tek job üretilir, Lua idempotenttir. Worker ortamı: `REDIS_URL`, `HEARTBEAT_STALE_MS`, `SWEEP_EVERY_MS`.
+- `disconnectAccount` redis-adapter ile tüm node'lara ulaşır ama yerelde bile asenkrondur (bir Pub/Sub turu); askıya almanın etkisi buna bağlı değildir (DB kontrolü + `forceOffline`).
+- **Bilinen sınırlar:** (1) Sweeper tek taramada en eski 5 000 adayı okur; stale ama `busy` şoförler heartbeat'ten silinmediği için 5 000'i aşarlarsa available şoförler taranamaz (pilotta olası değil; çözüm: imleçli okuma veya busy şoförleri ayrı tutmak). (2) Worker'da health check yok. (3) **Faz 3'e açık karar:** `forceOffline` `busy` şoförü de koşulsuz offline yapar; eşleşmiş ride'ı olan şoför askıya alınır veya çıkış yaparsa ride'ın ne olacağı (yeniden arama mı, çıkışı reddetmek mi) Faz 3'te kararlaştırılmalı ve kabul testine eklenmelidir.
 
 ### Kimlik doğrulama mimarisi (`apps/api/src/auth/`)
 - Üç rol: `driver`, `stand`, `admin`. Kimlik bilgileri `drivers` / `stands` tablolarında; ayrı `users` tablosu yok. Yönetici tek hesaptır ve DB'de değil ortam değişkenlerindedir (`ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, `ADMIN_TOKEN_VERSION`); sabit id `'admin'`.
@@ -334,7 +356,7 @@ EXEC
 - **Pasif:** `ZREM dn:geo:drivers:available <id>` + `HSET status offline`
 - **Socket kopması:** Hemen silinmez; heartbeat sweeper'ın eşiği dolana kadar tolerans tanınır (mobil ağ dalgalanması).
 
-### Senaryo 3 — Heartbeat sweeper (worker, her 15 sn)
+### Senaryo 3 — Heartbeat sweeper (worker, her 10 sn)
 ```
 ZRANGEBYSCORE dn:drivers:heartbeat -inf (now-60000)   → stale driverId listesi
 # her biri için (status=busy olanlar hariç; aktif ride'ı olan şoför düşürülmez):
@@ -444,7 +466,7 @@ type RideSnapshot = {
 |---|---|---|---|
 | `auth_refresh` | C → S | `{ token }` | Bağlantıyı koparmadan access token yenileme |
 | `auth_expired` | S → C | `{}` | Access token süresi doldu; istemci 30 sn içinde REST ile refresh edip yeni access token'ı `auth_refresh` ile göndermezse bağlantı kesilir |
-| `session_sync` | S → C | Şoför: `{ driverStatus, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir |
+| `session_sync` | S → C | Şoför: `{ driverStatus, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir. Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü) |
 
 ### Şoför (`/driver`)
 | Event | Yön | Payload |
