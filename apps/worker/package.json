@@ -1,0 +1,17 @@
+{
+  "name": "@duraknet/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@duraknet/shared": "workspace:*",
+    "pino": "^10.3.1"
+  }
+}

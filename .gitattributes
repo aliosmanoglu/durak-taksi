@@ -1,0 +1,2 @@
+# Satır sonları her platformda LF (CI Linux; Windows autocrlf dönüşümünü engeller)
+* text=auto eol=lf

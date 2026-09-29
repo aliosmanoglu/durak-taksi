@@ -1,0 +1,43 @@
+{
+  "name": "@duraknet/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/server.ts",
+    "build": "tsup",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "hash-password": "tsx src/scripts/hash-password.ts"
+  },
+  "dependencies": {
+    "@duraknet/shared": "workspace:*",
+    "@node-rs/argon2": "^2.2.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "kysely": "^0.29.6",
+    "pg": "^8.23.0",
+    "pino": "^10.3.1",
+    "rate-limit-redis": "^6.0.1",
+    "socket.io": "^4.8.4",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.2.0",
+    "@testcontainers/redis": "^12.2.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
+    "node-pg-migrate": "^9.0.0",
+    "socket.io-client": "^4.8.4",
+    "supertest": "^7.3.0",
+    "testcontainers": "^12.2.0"
+  }
+}

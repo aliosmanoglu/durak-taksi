@@ -1,0 +1,6 @@
+{
+  "name": "@duraknet/driver-mobile",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Şoför uygulaması (Expo). Faz 2'de kurulacak; şimdilik yer tutucu."
+}

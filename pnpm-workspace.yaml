@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# pnpm bağımlılık build script'lerini varsayılan olarak engeller; kararlar burada.
+allowBuilds:
+  esbuild: true
+  # testcontainers'ın dolaylı bağımlılıkları; native eklentiler isteğe bağlı, gerek yok.
+  cpu-features: false
+  ssh2: false
+  protobufjs: false
