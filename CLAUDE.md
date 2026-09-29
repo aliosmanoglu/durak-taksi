@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Komutlar
 
-pnpm workspace monorepo (Node ≥ 20, pnpm 12). Kökten çalıştırılır:
+pnpm workspace monorepo (pnpm 12; Node ≥ 20 çalışma zamanı için, **testler Node ≥ 22.19 ister**: `testcontainers` → `undici@8`; CI ve yerel geliştirme Node 24). Kökten çalıştırılır:
 
 ```bash
 pnpm install
