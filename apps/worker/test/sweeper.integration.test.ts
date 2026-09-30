@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, describe, expect, it, inject } from 'vitest';
-import { PRESENCE, redisKeys } from '@duraknet/shared';
+import { DRIVER_HASH, PRESENCE, redisKeys } from '@duraknet/shared';
 import { sweepStaleDrivers } from '../src/sweeper';
 
 let redis: Redis;
@@ -21,7 +21,7 @@ afterEach(async () => {
   const m = redis.multi();
   m.zrem(redisKeys.geoAvailable, ...ids);
   m.zrem(redisKeys.heartbeat, ...ids);
-  for (const id of ids) m.del(redisKeys.driver(id));
+  for (const id of ids) m.del(redisKeys.driver(id), redisKeys.driverPresenceVersion(id));
   await m.exec();
 });
 afterAll(async () => {
@@ -280,5 +280,67 @@ describe('sweepStaleDrivers', () => {
     expect((await stateOf(quiet)).inGeo).toBe(false);
     expect(aliveDropped).toBe(false);
     expect(await stateOf(alive)).toMatchObject({ inGeo: true, status: 'available' });
+  });
+});
+
+describe('sweepStaleDrivers — offlineReason ve presenceVersion', () => {
+  const versionOf = async (id: string) => {
+    const v = await redis.get(redisKeys.driverPresenceVersion(id));
+    return v === null ? null : Number(v);
+  };
+
+  it('11a. düşürülen şoföre offlineReason=stale_heartbeat yazılır ve presenceVersion eskisinden (ve Redis saatinden) büyük olur', async () => {
+    const now = Date.now();
+    const id = await seed({ status: 'available', lastSeen: now - STALE - 1_000 });
+    const old = now - 5_000;
+    await redis.set(redisKeys.driverPresenceVersion(id), String(old));
+    const [sec, usec] = await redis.time();
+    const redisNow = Number(sec) * 1000 + Math.floor(Number(usec) / 1000);
+
+    expect(await sweepStaleDrivers(redis, { staleMs: STALE, now })).toContain(id);
+    const h = await redis.hgetall(redisKeys.driver(id));
+    expect(h[DRIVER_HASH.status]).toBe('offline');
+    expect(h[DRIVER_HASH.offlineReason]).toBe('stale_heartbeat');
+    expect(h).not.toHaveProperty('presenceVersion'); // sürüm hash'te değil, ayrı anahtarda
+    const v = (await versionOf(id))!;
+    expect(v).toBeGreaterThan(old);
+    expect(v).toBeGreaterThanOrEqual(redisNow);
+  });
+
+  it('11b. sürüm saatin ilerisindeyse de eski+1\'den küçük olmaz (geri gitmez)', async () => {
+    const now = Date.now();
+    const id = await seed({ status: 'available', lastSeen: now - STALE - 1_000 });
+    const future = now + 3_600_000;
+    await redis.set(redisKeys.driverPresenceVersion(id), String(future));
+    await sweepStaleDrivers(redis, { staleMs: STALE, now });
+    expect(await versionOf(id)).toBe(future + 1);
+  });
+
+  it('11c. busy ve taze şoförün sürümü/sebebi değişmez; ikinci tarama düşürülmüş şoförün sürümünü tekrar artırmaz', async () => {
+    const now = Date.now();
+    const busy = await seed({ status: 'busy', lastSeen: now - STALE - 60_000 });
+    const fresh = await seed({ status: 'available', lastSeen: now - STALE + 1_000 });
+    const stale = await seed({ status: 'available', lastSeen: now - STALE - 1_000 });
+    for (const id of [busy, fresh, stale]) await redis.set(redisKeys.driverPresenceVersion(id), '1000');
+
+    await sweepStaleDrivers(redis, { staleMs: STALE, now });
+    expect(await versionOf(busy)).toBe(1000);
+    expect(await versionOf(fresh)).toBe(1000);
+    expect(await redis.hget(redisKeys.driver(busy), DRIVER_HASH.offlineReason)).toBeNull();
+    expect(await redis.hget(redisKeys.driver(fresh), DRIVER_HASH.offlineReason)).toBeNull();
+
+    const afterFirst = await versionOf(stale);
+    expect(afterFirst).toBeGreaterThan(1000);
+    await sweepStaleDrivers(redis, { staleMs: STALE, now });
+    expect(await versionOf(stale)).toBe(afterFirst);
+  });
+
+  it('11d. hash\'i olmayan stale kayıt için yeni hash yaratılmaz', async () => {
+    const now = Date.now();
+    const id = randomUUID();
+    touched.add(id);
+    await redis.multi().geoadd(redisKeys.geoAvailable, LNG, LAT, id).zadd(redisKeys.heartbeat, now - STALE - 5_000, id).exec();
+    expect(await sweepStaleDrivers(redis, { staleMs: STALE, now })).toContain(id);
+    expect(await redis.exists(redisKeys.driver(id))).toBe(0);
   });
 });

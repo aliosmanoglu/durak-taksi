@@ -9,6 +9,9 @@ export const authRefreshSchema = z.object({ token: z.string().min(1) });
 
 export const goOnlineSchema = z.object({ location: latLngSchema });
 
+/** `driver_go_offline` ve `session_sync_request` gövdesi: boş nesne (fazla alan yok sayılır). */
+export const emptyPayloadSchema = z.object({});
+
 export const locationUpdateSchema = z.object({
   location: latLngSchema,
   heading: z.number().min(0).max(360).optional(),

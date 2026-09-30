@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "DurakNet Şoför",
+    "slug": "duraknet-driver",
+    "scheme": "duraknet-driver",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0F14",
+    "ios": {
+      "bundleIdentifier": "net.duraknet.driver",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Aktif olduğunuzda yakınınızdaki durak çağrılarını alabilmeniz için konumunuz kullanılır. Pasifken konum paylaşılmaz.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Uygulama arka plandayken de (ör. navigasyon açıkken) çağrı alabilmeniz için konumunuz kullanılır. Pasifken konum paylaşılmaz.",
+        "UIBackgroundModes": [
+          "location"
+        ]
+      }
+    },
+    "android": {
+      "package": "net.duraknet.driver",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B0F14"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Aktif olduğunuzda yakınınızdaki durak çağrılarını alabilmeniz için konumunuz kullanılır. Pasifken konum paylaşılmaz.",
+          "locationAlwaysAndWhenInUsePermission": "Uygulama arka plandayken de (ör. navigasyon açıkken) çağrı alabilmeniz için konumunuz kullanılır. Pasifken konum paylaşılmaz.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#3DDC84"
+        }
+      ]
+    ]
+  }
+}

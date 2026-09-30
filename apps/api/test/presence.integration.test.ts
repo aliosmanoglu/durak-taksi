@@ -94,7 +94,7 @@ describe('PresenceService — aktif/pasif mod (Senaryo 2)', () => {
     const p = t.presence;
     const id = fakeDriverId();
 
-    expect(await p.goOnline(id, SULTANAHMET)).toBe('available');
+    expect((await p.goOnline(id, SULTANAHMET)).status).toBe('available');
     expect(await p.getStatus(id)).toBe('available');
 
     // GEOPOS (lng, lat) sırasıyla yazıldığını doğrular: ters yazılsaydı lat≈28.97 olurdu.
@@ -118,7 +118,7 @@ describe('PresenceService — aktif/pasif mod (Senaryo 2)', () => {
     expect(Number(h.lng)).toBeCloseTo(SULTANAHMET.lng, 6);
     expect(await heartbeatScore(t.redis, id)).not.toBeNull();
 
-    expect(await p.goOffline(id)).toBe('offline');
+    expect((await p.goOffline(id)).status).toBe('offline');
     expect((await geoSearch(t.redis, TAKSIM, 4000)).has(id)).toBe(false);
     expect(await inGeo(t.redis, id)).toBe(false);
     expect((await driverHash(t.redis, id)).status).toBe('offline');
@@ -132,8 +132,8 @@ describe('PresenceService — aktif/pasif mod (Senaryo 2)', () => {
   it('goOnline tekrarı idempotenttir (available kalır, GEO\'da tek kayıt)', async () => {
     const p = t.presence;
     const id = fakeDriverId();
-    expect(await p.goOnline(id, SULTANAHMET)).toBe('available');
-    expect(await p.goOnline(id, TAKSIM)).toBe('available');
+    expect((await p.goOnline(id, SULTANAHMET)).status).toBe('available');
+    expect((await p.goOnline(id, TAKSIM)).status).toBe('available');
     const pos = await geoPos(t.redis, id);
     expect(pos!.lat).toBeCloseTo(TAKSIM.lat, 4);
     expect(pos!.lng).toBeCloseTo(TAKSIM.lng, 4);
@@ -199,7 +199,7 @@ describe('PresenceService — konum güncellemesi (Senaryo 1)', () => {
 
     // Hiç online olmamış şoför.
     const never = fakeDriverId();
-    expect(await p.updateLocation(never, { location: TAKSIM }, Date.now())).toBe('offline');
+    expect(await p.updateLocation(never, { location: TAKSIM }, Date.now())).toMatchObject({ status: 'offline', offlineReason: 'not_online' });
     expect(await inGeo(t.redis, never)).toBe(false);
     expect(await heartbeatScore(t.redis, never)).toBeNull();
     expect(await p.getStatus(never)).toBe('offline');
@@ -212,7 +212,7 @@ describe('PresenceService — konum güncellemesi (Senaryo 1)', () => {
     const was = fakeDriverId();
     await p.goOnline(was, SULTANAHMET);
     await p.goOffline(was);
-    expect(await p.updateLocation(was, { location: TAKSIM }, Date.now())).toBe('offline');
+    expect(await p.updateLocation(was, { location: TAKSIM }, Date.now())).toMatchObject({ status: 'offline', offlineReason: 'user' });
     expect(await inGeo(t.redis, was)).toBe(false);
     expect((await driverHash(t.redis, was)).status).toBe('offline');
     expect((await geoSearch(t.redis, TAKSIM, 500)).has(was)).toBe(false);
@@ -234,7 +234,7 @@ describe('PresenceService — konum güncellemesi (Senaryo 1)', () => {
     expect(await heartbeatScore(t.redis, id)).toBe(now);
     expect(await inGeo(t.redis, id)).toBe(false);
 
-    expect(await p.goOnline(id, TAKSIM)).toBe('busy');
+    expect((await p.goOnline(id, TAKSIM)).status).toBe('busy');
     expect(await inGeo(t.redis, id)).toBe(false);
     expect(await p.getStatus(id)).toBe('busy');
 
@@ -253,7 +253,7 @@ describe('PresenceService — konum güncellemesi (Senaryo 1)', () => {
     expect((await driverHash(t.redis, d.id)).status).toBe('busy');
 
     const on = (await socket.timeout(5000).emitWithAck(DRIVER_EVENTS.goOnline, { location: TAKSIM })) as Ack<DriverStatusResult>;
-    expect(on).toEqual({ ok: true, data: { status: 'busy' } });
+    expect(on).toEqual({ ok: true, data: { status: 'busy', presenceVersion: expect.any(Number) } });
     expect(await inGeo(t.redis, d.id)).toBe(false);
   });
 });
@@ -265,7 +265,7 @@ describe('Socket — /driver ve /stand', () => {
 
     const drv = connectWithSync<DriverSessionSync>(t, '/driver', d.tokens.accessToken);
     const std = connectWithSync<StandSessionSync>(t, '/stand', s.tokens.accessToken);
-    expect(await drv.sync).toEqual({ driverStatus: 'offline', openRequests: [] });
+    expect(await drv.sync).toEqual({ driverStatus: 'offline', offlineReason: 'not_online', presenceVersion: expect.any(Number), openRequests: [] });
     expect(await std.sync).toEqual({ activeRides: [] });
   });
 
@@ -275,7 +275,7 @@ describe('Socket — /driver ve /stand', () => {
     await first.sync;
 
     const ack = (await first.socket.timeout(5000).emitWithAck(DRIVER_EVENTS.goOnline, { location: SULTANAHMET })) as Ack<DriverStatusResult>;
-    expect(ack).toEqual({ ok: true, data: { status: 'available' } });
+    expect(ack).toEqual({ ok: true, data: { status: 'available', presenceVersion: expect.any(Number) } });
     expect((await geoSearch(t.redis, SULTANAHMET, 100)).has(d.id)).toBe(true);
     const hbBefore = await heartbeatScore(t.redis, d.id);
     expect(hbBefore).not.toBeNull();
@@ -289,10 +289,10 @@ describe('Socket — /driver ve /stand', () => {
     expect(await heartbeatScore(t.redis, d.id)).toBe(hbBefore);
 
     const second = connectWithSync<DriverSessionSync>(t, '/driver', d.tokens.accessToken);
-    expect(await second.sync).toEqual({ driverStatus: 'available', openRequests: [] });
+    expect(await second.sync).toEqual({ driverStatus: 'available', presenceVersion: expect.any(Number), openRequests: [] });
 
     const off = (await second.socket.timeout(5000).emitWithAck(DRIVER_EVENTS.goOffline, {})) as Ack<DriverStatusResult>;
-    expect(off).toEqual({ ok: true, data: { status: 'offline' } });
+    expect(off).toEqual({ ok: true, data: { status: 'offline', presenceVersion: expect.any(Number) } });
     expect(await inGeo(t.redis, d.id)).toBe(false);
   });
 
@@ -380,7 +380,7 @@ describe('Socket — /driver ve /stand', () => {
 
     const resync = nextSessionSync<DriverSessionSync>(socket);
     socket.emit(DRIVER_EVENTS.locationUpdate, { location: TAKSIM, ts: Date.now() });
-    expect(await resync).toEqual({ driverStatus: 'offline', openRequests: [] });
+    expect(await resync).toEqual({ driverStatus: 'offline', offlineReason: 'forced', presenceVersion: expect.any(Number), openRequests: [] });
     expect(await inGeo(t.redis, d.id)).toBe(false);
     expect(socket.connected).toBe(true);
   });
@@ -394,7 +394,7 @@ describe('Socket — /driver ve /stand', () => {
 
     const resync = nextSessionSync<DriverSessionSync>(socket);
     socket.emit(DRIVER_EVENTS.locationUpdate, { location: TAKSIM, ts: Date.now() });
-    expect(await resync).toEqual({ driverStatus: 'offline', openRequests: [] });
+    expect(await resync).toEqual({ driverStatus: 'offline', offlineReason: 'not_online', presenceVersion: expect.any(Number), openRequests: [] });
     expect(await inGeo(t.redis, d.id)).toBe(false);
   });
 
@@ -530,7 +530,7 @@ describe('askıya alma yarışları (Ö1)', () => {
     try {
       socket.emit(DRIVER_EVENTS.locationUpdate, { location: TAKSIM, ts: Date.now() });
       await waitFor(async () => results.length, (n) => n >= 1);
-      expect(results).toEqual(['offline']);
+      expect(results).toMatchObject([{ status: 'offline', offlineReason: 'forced' }]);
       expect(await inGeo(t.redis, d.id)).toBe(false);
       expect(await heartbeatScore(t.redis, d.id)).toBeNull();
       expect(await t.presence.getStatus(d.id)).toBe('offline');
@@ -578,7 +578,7 @@ describe('iki API node (redis-adapter)', () => {
       first.socket.close();
 
       const second = connectWithSync<DriverSessionSync>(b, '/driver', d.tokens.accessToken);
-      expect(await second.sync).toEqual({ driverStatus: 'available', openRequests: [] });
+      expect(await second.sync).toEqual({ driverStatus: 'available', presenceVersion: expect.any(Number), openRequests: [] });
     } finally {
       await a.cleanup();
       await b.cleanup();

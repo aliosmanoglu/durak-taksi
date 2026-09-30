@@ -27,6 +27,16 @@ pnpm --filter @duraknet/worker test                                  # sweeper; 
 pnpm dev:worker                                                      # veya: pnpm --filter @duraknet/worker dev
 ```
 
+Şoför uygulaması (`apps/driver-mobile`, Expo):
+```bash
+pnpm --filter @duraknet/driver-mobile test        # vitest (Docker gerektirmez)
+pnpm --filter @duraknet/driver-mobile lint
+pnpm --filter @duraknet/driver-mobile typecheck
+pnpm --filter @duraknet/driver-mobile start       # expo start
+```
+- API adresi derleme zamanında `EXPO_PUBLIC_API_URL` ile verilir (`apps/driver-mobile/.env.example`; emülatörde `http://10.0.2.2:3000`, gerçek cihazda LAN IP'si).
+- Arka plan konumu (`expo-location` + `expo-task-manager`) Expo Go'da çalışmaz; **development build** gerekir (`pnpm --filter @duraknet/driver-mobile android` / `ios`).
+
 Faz 2 yük betiği (CI dışı; iki API node'u aynı PG + Redis'e bağlı çalışırken): `pnpm --filter @duraknet/api exec tsx --env-file=../../.env scripts/loadtest-presence.ts` — kullanım ve ölçüm sınırları dosyanın başında.
 
 - **Testler:** `apps/api/vitest.config.ts` iki proje tanımlar. `unit`: `test/**/*.test.ts`. `integration`: `test/**/*.integration.test.ts`; `test/helpers/containers.ts` (globalSetup) çalıştırma başına **bir** PostGIS + Redis konteyner çifti başlatır, migration'ı node-pg-migrate `runner` ile uygular ve adresleri `inject` ile verir. `test/helpers/app.ts` → `startTestApp()` uygulamayı server.ts ile aynı sırada kurar. Testler birbirinden bağımsızdır: her test benzersiz telefon/plaka/kullanıcı adıyla kendi hesabını açar; IP bazlı limitlere takılmamak için istekler rastgele `X-Forwarded-For` taşır (`trustProxy: 'loopback'`).
@@ -41,18 +51,23 @@ Faz 2 yük betiği (CI dışı; iki API node'u aynı PG + Redis'e bağlı çalı
 
 **Faz 1 (kimlik & temel veri) tamamlandı; kabul kriteri gerçek PostGIS + Redis üzerinde entegrasyon testleriyle doğrulandı** (`apps/api/test/auth.integration.test.ts`, `rate-limit.integration.test.ts`). Test edilmeyenler: `auth_expired` zamanlayıcısı, handshake/askıya alma yarışı, hesap bazlı dışındaki hız sınırları.
 
-**Faz 2 backend'i (şoför varlığı & konum) tamamlandı; mobil kısmı yapılmadı.** Testler: `apps/api/test/presence.integration.test.ts`, `apps/worker/test/sweeper.integration.test.ts`. Kabul kriteri durumu:
+**Faz 2 backend'i (şoför varlığı & konum) tamamlandı; mobil kısmı yazıldı ama gerçek cihazda doğrulanmadı.** Testler: `apps/api/test/presence.integration.test.ts`, `presence-sync.integration.test.ts`, `session-sync-failure.integration.test.ts`, `apps/worker/test/sweeper.integration.test.ts`. Kabul kriteri durumu:
 - "Bağlantısı düşen şoför ≤ 75 sn içinde GEO'dan çıkar": doğrulandı (eşik 60 sn + tarama 10 sn = en kötü 70 sn; testte simüle saatle ve kısaltılmış eşiklerle gerçek zamanda).
 - "500 şoför / 2 node / p95 < 50 ms": **kesin ölçülmedi.** Yerel yük testinde (2 node, 500 şoför, 60 sn) 9 783 güncellemede 0 kayıp; gönderimden Redis'te görünmeye p95 110 ms (100 ms örnekleme dahil üst sınır). Sunucu içi süre ölçülmüyor; kesin p95 Faz 5'te `driver_location_update` handler'ına `prom-client` histogramı eklenerek alınacak.
-- Mobil (aktif/pasif toggle, arka plan konumu, yeniden bağlanma) yapılmadı: `apps/driver-mobile` ve `apps/stand-panel` yer tutucudur. Sıra: `ekran-tasarimcisi` → `frontend-gelistirici`.
+- Mobil (aktif/pasif toggle, arka plan konumu, yeniden bağlanma, `session_sync` karşılaştırması): `apps/driver-mobile`'da yapıldı (tasarım: `docs/design/driver-mobile-faz2.md`); **cihazda doğrulanmadı**. Açık: S5 (iOS'ta duran araçta arka plan konumu seyrekleşip 60 sn eşiği aşılabilir), S6 (yalnızca ön plan izniyle konum servisinin arka planda sürüp sürmediği) — ikisi de development build'le gerçek cihazda ölçülmeli. `apps/stand-panel` hâlâ yer tutucudur.
 
 Faz 3+ (dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef tasarımdır.
+
+**Sıradaki adımlar:** (1) Faz 2 mobilin gerçek cihaz doğrulaması (S5, S6; bkz. tasarım belgesi Bölüm 9). (2) Faz 3 (çağrı & FCFS eşleşme); başlamadan önce yukarıdaki `busy` şoför kararı verilmeli. Çalışma düzeni: sözleşme (`packages/shared`) önce yazılır, ardından `backend-gelistirici` ve `tester` paralel çalışır, sonunda `kalite-kontrolcu` denetler. PR açmak için `gh` gerekir (yerelde `C:\Program Files\GitHub CLI\gh.exe`; terminal PATH'i yenilemediyse tam yolla çağır).
 
 ### Şoför varlığı (`apps/api/src/presence/`, `apps/worker/src/sweeper.ts`)
 - Redis anahtarları ve zamanlamalar tek yerde: `packages/shared/src/redis.ts` (`redisKeys`, `PRESENCE`). Konum PG'ye yazılmaz.
 - Durum okuyup yazan her işlem (online, offline, konum, sweep) **Lua ile atomiktir**; "status oku → MULTI" kalıbı kullanılmaz (arada gelen offline/sweep şoförü GEO'ya geri yazar). Heartbeat skoru ve `updatedAt` sunucu saatiyle yazılır; istemcinin `ts`'ine güvenilmez.
 - Konum throttle'ı Redis anahtarının TTL'ine dayanır (`SET NX PX`); offline şoförün güncellemesi throttle tüketmez. Offline şoförden konum gelirse sunucu `session_sync` (`driverStatus: 'offline'`) gönderir: sweeper'ın düşürdüğü ama socket'i bağlı kalan şoför "Aktif" görünüp çağrı alamaz halde kalmaz.
 - Socket kopması presence'a dokunmaz (mobil ağ toleransı); temizliği sweeper yapar. Şoför askıya alınınca veya `/auth/logout`'ta `disconnectAccount` → `forceOffline` (GEO'dan anında çıkar). `driver_go_online` Lua'dan sonra hesap durumunu tekrar kontrol eder (askıya alma yarışı).
+- **`offlineReason`** hash alanı: `driver_go_offline` → `user`, sweeper → `stale_heartbeat`, `forceOffline` → `forced`; `driver_go_online` siler. Hash yoksa veya alan yoksa (eski veri) `session_sync` `not_online` taşır. Hash alan adları `DRIVER_HASH` (shared `redis.ts`).
+- **`presenceVersion`** hash'te değil, ayrı ve TTL'siz `dn:driver:{id}:pv` anahtarında tutulur (`redisKeys.driverPresenceVersion`). Her durum geçişinde (online, offline, force, sweep) aynı Lua içinde `max(redisNowMs + 1, eski + 1)` yazılır (`PRESENCE_VERSION_LUA`, API ve worker ortak; Redis `TIME`; anahtar KEYS ile verilir). `go_online` `busy` dönerse, konum güncellemesi ve reddedilen `go_offline` sürümü değiştirmez. Anahtar yoksa okunan sürüm Redis'in o anki zamanıdır; durum/sebep (HMGET) ve sürüm aynı Lua okumasında alınır. Hash silinse ya da süresi dolsa bile sürüm geri gitmez (art arda hızlı geçişlerde saatin önüne geçmiş olsa da). Sweeper hash'i olmayan şoför için pv yazmaz.
+- **`session_sync_request`** (`{}` → ack `DriverSessionSync`) bağlıyken aynı gövdeyi döner; offline şoförün konum güncellemesine giden `session_sync` sebep ve sürümü konum Lua'sından alır (ek round-trip yok).
 - `createRealtime` `presence`'ı zorunlu alır (`null` yalnızca kimlik testleri içindir); `createApp`'te `auth` verildiğinde zorunludur.
 - **`socket.data` yalnızca JSON'a çevrilebilir veri tutar** (şu an sadece `auth` claim'leri): redis-adapter onu node'lar arası `fetchSockets` yanıtında serileştirir. Zamanlayıcı gibi nesneler socket üzerinde Symbol anahtarıyla tutulur (`realtime.ts` → `timersOf`); test 7c bunu korur.
 - Sweeper BullMQ job scheduler'ıyla (`presence-sweep`) çalışır; çok replikada her tikte tek job üretilir, Lua idempotenttir. Worker ortamı: `REDIS_URL`, `HEARTBEAT_STALE_MS`, `SWEEP_EVERY_MS`.
@@ -173,7 +188,7 @@ matched ──► cancelled           (yalnızca durak iptali)
 |---|---|
 | **API Node** (N replika) | REST (auth, durak/şoför yönetimi, ride geçmişi), Socket.io bağlantıları, state machine çağrıları. **Bellekte paylaşılan state tutmaz.** |
 | **Worker** | Dispatch dalgaları (yarıçap genişletme) ve maksimum yarıçapta sürekli tarama, heartbeat ile ölü şoför temizliği, push bildirimleri. |
-| **Redis** (6.2+, **cluster modu değil**: tek primary + replika) | Anlık konum (GEO), şoför müsaitliği, aktif ride cache'i, atomik kabul (Lua), Socket.io adapter Pub/Sub, BullMQ. |
+| **Redis** (6.2+, **cluster modu değil**: tek primary + replika; `maxmemory-policy` **`noeviction`** veya `volatile-*` olmalı: TTL'siz `dn:driver:{id}:pv` ve BullMQ anahtarları tahliye edilmemeli) | Anlık konum (GEO), şoför müsaitliği, aktif ride cache'i, atomik kabul (Lua), Socket.io adapter Pub/Sub, BullMQ. |
 | **PostgreSQL** (15+, PostGIS) | Kaynak doğruluk: duraklar, şoförler, ride'lar ve durum zaman damgaları. |
 
 ### Veri Akışı İlkeleri
@@ -328,7 +343,8 @@ Tüm anahtarlar `dn:` önekiyle başlar. GEO komutlarında sıra **(longitude, l
 | Anahtar | Tip | İçerik | TTL |
 |---|---|---|---|
 | `dn:geo:drivers:available` | GEO | Yalnızca `available` şoförler; member = `driverId` | — (sweeper temizler) |
-| `dn:driver:{driverId}` | HASH | `status` (`offline`/`available`/`busy`), `lat`, `lng`, `heading`, `updatedAt`, `rideId` | 24 saat, her güncellemede yenilenir |
+| `dn:driver:{driverId}` | HASH | `status` (`offline`/`available`/`busy`), `lat`, `lng`, `heading`, `updatedAt`, `rideId`, `offlineReason` | 24 saat, her güncellemede yenilenir |
+| `dn:driver:{driverId}:pv` | STRING | Varlık sürümü (`presenceVersion`, epoch ms tabanlı, kesin artan); her durum geçişinde presence Lua'sı yazar | — (hash silinse bile sürüm geri gitmesin diye). Tahliye edilirse sürüm Redis saatine düşer (geri gidebilir): `maxmemory-policy` `noeviction` / `volatile-*` olmalı |
 | `dn:drivers:heartbeat` | ZSET | member=`driverId`, score=son konum zamanı (epoch ms) | — |
 | `dn:ride:{rideId}` | HASH | `status`, `version`, `standId`, `driverId`, `pickupLat`, `pickupLng`, `radius`, `wave` | Terminal durumdan 1 saat sonra |
 | `dn:ride:{rideId}:candidates` | SET | Çağrının bildirildiği şoförler | Ride ile aynı |
@@ -362,8 +378,11 @@ ZRANGEBYSCORE dn:drivers:heartbeat -inf (now-60000)   → stale driverId listesi
 # her biri için (status=busy olanlar hariç; aktif ride'ı olan şoför düşürülmez):
 ZREM dn:geo:drivers:available <id>
 ZREM dn:drivers:heartbeat <id>
-HSET dn:driver:<id> status offline
+# yalnızca dn:driver:<id> hash'i hâlâ varsa:
+HSET dn:driver:<id> status offline offlineReason stale_heartbeat
+SET dn:driver:<id>:pv max(redisNowMs + 1, GET pv + 1)   # presenceVersion artışı (Lua içinde)
 ```
+Hepsi aday partisi başına tek Lua script'inde; eşik ve `busy` kontrolü script içinde yeniden yapılır.
 
 ### Senaryo 4 — Çağrı fırlatma: yarıçapta şoför arama
 ```
@@ -466,13 +485,14 @@ type RideSnapshot = {
 |---|---|---|---|
 | `auth_refresh` | C → S | `{ token }` | Bağlantıyı koparmadan access token yenileme |
 | `auth_expired` | S → C | `{}` | Access token süresi doldu; istemci 30 sn içinde REST ile refresh edip yeni access token'ı `auth_refresh` ile göndermezse bağlantı kesilir |
-| `session_sync` | S → C | Şoför: `{ driverStatus, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir. Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü) |
+| `session_sync` | S → C | Şoför: `{ driverStatus, offlineReason?, presenceVersion, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir. Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü). `offlineReason` (`user` \| `stale_heartbeat` \| `forced` \| `not_online`) yalnızca offline iken bulunur. `presenceVersion` her durum geçişinde kesin artar (Redis `TIME` tabanlı); istemci aynı bağlantıda daha küçük sürümlüyü yok sayar |
 
 ### Şoför (`/driver`)
 | Event | Yön | Payload |
 |---|---|---|
-| `driver_go_online` | C → S | `{ location: LatLng }` → ack `{ ok, data: { status: 'available' } }` |
-| `driver_go_offline` | C → S | `{}` (aktif ride varken reddedilir) |
+| `driver_go_online` | C → S | `{ location: LatLng }` → ack `{ ok, data: { status: 'available' | 'busy', presenceVersion } }` — aktif işi olan şoför `busy` kalır ve sürüm değişmez |
+| `driver_go_offline` | C → S | `{}` → ack `{ ok, data: { status: 'offline', presenceVersion } }` (aktif ride varken `INVALID_TRANSITION`). Gövde **zorunlu** (`{}`): gövdesiz `emit(event, ack)`'te sunucu callback'i payload olarak alır, doğrulama düşer ve **ack hiç dönmez** (istemci zaman aşımına düşer). `session_sync_request` için de aynı |
+| `session_sync_request` | C → S | `{}` → ack `{ ok, data: DriverSessionSync }` — bağlıyken güncel durumu istemek için (ör. uygulama arka plandan döndü) |
 | `driver_location_update` | C → S | `{ location: LatLng, heading?: number, accuracy?: number, ts: number }` — ack'siz, throttle 1/sn |
 | `ride_requested` | S → C | `RideRequest` |
 | `ride_accept` | C → S | `{ rideId }` → ack `{ ok, data: RideSnapshot }` veya `RIDE_NOT_AVAILABLE` |
