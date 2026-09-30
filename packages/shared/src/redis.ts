@@ -68,3 +68,55 @@ local function dnBumpVersion(pvKey, nowMs)
   return v
 end
 `;
+
+/**
+ * Dispatch zamanlaması (CLAUDE.md Bölüm 5, Senaryo 4). Dalga `n` (1 tabanlı) bildirildikten sonra
+ * sonraki dalga `WAVE_DELAY_S[n]` sn sonra çalışır; tablo bittikten sonraki dalgalar (sürekli tarama)
+ * `max_radius_m` ile `CONTINUOUS_SCAN_EVERY_S` aralığıyla süresiz tekrar eder. Çağrı kendiliğinden kapanmaz.
+ */
+export const DISPATCH = {
+  /** Dalga 1, 2, 3 sonrasındaki bekleme (sn). */
+  WAVE_DELAY_S: [20, 20, 30],
+  /** Dalga 4, 5, … (sürekli tarama) aralığı (sn). */
+  CONTINUOUS_SCAN_EVERY_S: 30,
+  /** Dalga yarıçap çarpanları (× initial_radius_m); 3. dalga ve sonrası `max_radius_m`. Sonuç `min(max_radius_m, ...)`. */
+  WAVE_RADIUS_MULTIPLIERS: [1, 2],
+  /** GEOSEARCH `COUNT`. */
+  GEOSEARCH_COUNT: 25,
+  /** Adayın konumu bu süreden eskiyse bildirilmez (= `PRESENCE.LOCATION_FRESH_MS`). */
+  LOCATION_FRESH_MS: 30_000,
+  /** `stand_nearby_drivers` yayın aralığı. */
+  NEARBY_EVERY_S: 10,
+  /** Terminal durumdan sonra `dn:ride:{id}*` anahtarlarının TTL'i. */
+  RIDE_TERMINAL_TTL_S: 3_600,
+} as const;
+
+/** `ride_still_open` hatırlatması; worker ortam değişkenleri (`REMINDER_FIRST_SEC`, `REMINDER_EVERY_SEC`) ezebilir. */
+export const REMINDER = {
+  FIRST_SEC: 180,
+  EVERY_SEC: 300,
+} as const;
+
+/** BullMQ job kimlikleri (idempotency). BullMQ custom id'de `:` yalnızca tam 3 parçada serbesttir; bu biçimler 3 parçadır. */
+export const jobIds = {
+  dispatch: (rideId: string, wave: number) => `dispatch:${rideId}:${wave}`,
+  reminder: (rideId: string, n: number) => `reminder:${rideId}:${n}`,
+} as const;
+
+/** Kuyruk adları. */
+export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder' } as const;
+
+/** `dn:ride:{id}` hash alan adları. `status` değerleri `RideStatus`. */
+export const RIDE_HASH = {
+  status: 'status',
+  version: 'version',
+  standId: 'standId',
+  driverId: 'driverId',
+  pickupLat: 'pickupLat',
+  pickupLng: 'pickupLng',
+  radius: 'radius',
+  wave: 'wave',
+} as const;
+
+/** İç olay kanalı `dn:events:ride` (Pub/Sub; yalnızca bilgilendirme, kritik iş BullMQ'dadır). */
+export const RIDE_EVENTS_CHANNEL = 'dn:events:ride';
