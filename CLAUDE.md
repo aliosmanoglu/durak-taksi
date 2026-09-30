@@ -58,6 +58,8 @@ Faz 2 yük betiği (CI dışı; iki API node'u aynı PG + Redis'e bağlı çalı
 
 Faz 3+ (dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef tasarımdır.
 
+**Açık PR'lar:** #1 (`faz-2-presence` → `main`, Faz 2 backend) ve #2 (`faz-2-mobile` → `faz-2-presence`, mobil + S1–S4 sözleşmesi). Önce #1 birleşir, sonra #2'nin hedefi `main`'e çevrilir. Mobil tasarım kararları (S1–S4; otomatik yeniden aktif olma: `wantsOnline` iken, son normal konumdan ≤ 10 dk ve 10 dk'da en çok 3 kez) `docs/design/driver-mobile-faz2.md` Bölüm 9'dadır; onaylı görsel tasarım: https://claude.ai/artifact/CXRYFx5ubciRnfWmgJDkkg. Mobil saf mantık `apps/driver-mobile/src/lib/**` (vitest), RN/Expo katmanı `src/services/**` (testsiz, yalnızca typecheck + `expo export`).
+
 **Sıradaki adımlar:** (1) Faz 2 mobilin gerçek cihaz doğrulaması (S5, S6; bkz. tasarım belgesi Bölüm 9). (2) Faz 3 (çağrı & FCFS eşleşme); başlamadan önce yukarıdaki `busy` şoför kararı verilmeli. Çalışma düzeni: sözleşme (`packages/shared`) önce yazılır, ardından `backend-gelistirici` ve `tester` paralel çalışır, sonunda `kalite-kontrolcu` denetler. PR açmak için `gh` gerekir (yerelde `C:\Program Files\GitHub CLI\gh.exe`; terminal PATH'i yenilemediyse tam yolla çağır).
 
 ### Şoför varlığı (`apps/api/src/presence/`, `apps/worker/src/sweeper.ts`)
