@@ -1,6 +1,55 @@
 {
   "name": "@duraknet/driver-mobile",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Şoför uygulaması (Expo). Faz 2'de kurulacak; şimdilik yer tutucu."
+  "description": "Şoför uygulaması (Expo).",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@duraknet/shared": "workspace:*",
+    "@expo-google-fonts/atkinson-hyperlegible": "^0.4.1",
+    "expo": "~57.0.26",
+    "expo-application": "~57.0.3",
+    "expo-constants": "~57.0.20",
+    "expo-dev-client": "~57.0.19",
+    "expo-font": "~57.0.4",
+    "expo-haptics": "~57.0.3",
+    "expo-linking": "~57.0.11",
+    "expo-location": "~57.0.20",
+    "expo-notifications": "~57.0.21",
+    "expo-router": "~57.0.24",
+    "expo-secure-store": "~57.0.4",
+    "expo-splash-screen": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "expo-task-manager": "~57.0.21",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.2",
+    "react-native-svg": "15.15.4",
+    "socket.io-client": "^4.8.4",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "~19.2.18",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "typescript"
+      ]
+    }
+  }
 }

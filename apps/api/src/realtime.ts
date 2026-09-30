@@ -5,6 +5,7 @@ import {
   authRefreshSchema,
   COMMON_EVENTS,
   DRIVER_EVENTS,
+  emptyPayloadSchema,
   goOnlineSchema,
   locationUpdateSchema,
   NAMESPACES,
@@ -18,7 +19,7 @@ import {
 import { AppError } from './http/errors';
 import { assertActiveSession, type AuthDeps } from './auth/service';
 import { verifyToken, type VerifiedClaims } from './auth/tokens';
-import type { PresenceService } from './presence/service';
+import type { PresenceService, PresenceState } from './presence/service';
 
 export interface Realtime {
   /**
@@ -168,9 +169,9 @@ function registerDriverHandlers(
     } catch (err) {
       return rejectSession(err, false);
     }
-    let status: DriverStatusResult['status'];
+    let result: DriverStatusResult;
     try {
-      status = await presence.goOnline(id, parsed.data.location);
+      result = await presence.goOnline(id, parsed.data.location);
     } catch (err) {
       return reply(toAckError(err, log));
     }
@@ -179,14 +180,28 @@ function registerDriverHandlers(
     } catch (err) {
       return rejectSession(err, true);
     }
-    reply({ ok: true, data: { status } });
+    reply({ ok: true, data: { status: result.status, presenceVersion: result.presenceVersion } });
   });
 
-  socket.on(DRIVER_EVENTS.goOffline, async (_payload: unknown, ack?: unknown) => {
+  socket.on(DRIVER_EVENTS.goOffline, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<DriverStatusResult>(ack);
     if (!(await ready)) return;
+    if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
     try {
-      reply({ ok: true, data: { status: await presence.goOffline(driverId()) } });
+      const r = await presence.goOffline(driverId());
+      reply({ ok: true, data: { status: r.status, presenceVersion: r.presenceVersion } });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+
+  // Bağlıyken güncel durumu isteme (ör. uygulama arka plandan döndü); socket'i yeniden kurmaya gerek kalmaz.
+  socket.on(DRIVER_EVENTS.sessionSyncRequest, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<DriverSessionSync>(ack);
+    if (!(await ready)) return;
+    if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
+    try {
+      reply({ ok: true, data: driverSessionSync(await presence.getState(driverId())) });
     } catch (err) {
       reply(toAckError(err, log));
     }
@@ -195,6 +210,7 @@ function registerDriverHandlers(
   // Ack'siz; geçersiz veya throttle'a takılan güncelleme sessizce düşer. Ham konum loglanmaz.
   // Şoför offline ise (pasif, hash süresi dolmuş veya sweeper düşürmüş) istemci "Aktif" görünüp çağrı
   // alamaz halde kalmasın diye `session_sync` gönderilir; istemci toggle'ını buna göre düzeltir.
+  // Sebep ve sürüm konum Lua'sının kendi yanıtından gelir (ek Redis round-trip yok).
   // Faz 3: busy şoförün konumu ayrıca `ride:{rideId}` odasına (`ride_driver_location`) yayınlanacak.
   socket.on(DRIVER_EVENTS.locationUpdate, async (payload: unknown) => {
     if (!(await ready)) return;
@@ -205,17 +221,28 @@ function registerDriverHandlers(
         location: parsed.data.location,
         heading: parsed.data.heading,
       });
-      if (r === 'offline') socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync('offline'));
+      if (typeof r === 'object') socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync(r));
     } catch (err) {
       log.warn({ err: err instanceof Error ? err.message : String(err) }, 'konum güncellenemedi');
     }
   });
 }
 
-/** Şoför `session_sync` gövdesi. Faz 3'te aktif ride ve açık çağrılar eklenecek. */
-function driverSessionSync(driverStatus: DriverSessionSync['driverStatus']): DriverSessionSync {
-  return { driverStatus, openRequests: [] };
+/**
+ * Şoför `session_sync` gövdesi. `offlineReason` yalnızca offline iken bulunur (alan hiç yazılmaz, `undefined`
+ * değil). Faz 3'te aktif ride ve açık çağrılar eklenecek.
+ */
+function driverSessionSync(state: PresenceState): DriverSessionSync {
+  return {
+    driverStatus: state.status,
+    ...(state.status === 'offline' ? { offlineReason: state.offlineReason ?? 'not_online' } : {}),
+    presenceVersion: state.presenceVersion,
+    openRequests: [],
+  };
 }
+
+/** `presence: null` (yalnızca kimlik/taşıma testleri) iken gönderilen varlık durumu. */
+const noPresenceState = (): PresenceState => ({ status: 'offline', offlineReason: 'not_online', presenceVersion: Date.now() });
 
 type NamespaceOpts = { presence: PresenceService | null };
 
@@ -245,14 +272,16 @@ function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: L
 
     try {
       if (role === 'driver') {
-        const status = opts.presence ? await opts.presence.getStatus(claims.sub) : 'offline';
-        socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync(status));
+        const state = opts.presence ? await opts.presence.getState(claims.sub) : noPresenceState();
+        socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync(state));
       } else {
         const sync: StandSessionSync = { activeRides: [] }; // Faz 3
         socket.emit(COMMON_EVENTS.sessionSync, sync);
       }
     } catch (err) {
+      // session_sync gelmezse istemci durumunu bilemeden bekler; bağlantıyı kes, istemci yeniden bağlansın.
       log.error({ err: err instanceof Error ? err.message : String(err) }, 'session_sync gönderilemedi');
+      socket.disconnect(true);
     }
   });
 }
