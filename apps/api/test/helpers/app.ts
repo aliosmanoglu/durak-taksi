@@ -19,6 +19,8 @@ import type { AuthDeps } from '../../src/auth/service';
 import { createDb } from '../../src/db';
 import { createPresence } from '../../src/presence/service';
 import { createRealtime } from '../../src/realtime';
+import type { DispatchScheduler } from '../../src/rides/scheduler';
+import { createRideService } from '../../src/rides/service';
 
 export const ADMIN_USERNAME = 'yonetici';
 export const ADMIN_PASSWORD = 'yonetici-sifre-123';
@@ -43,7 +45,11 @@ export const uniqueUsername = () => `durak_${letters(4).toLowerCase()}${digits(6
 
 export type TestApp = Awaited<ReturnType<typeof startTestApp>>;
 
-export type StartTestAppOptions = { redisAdapter?: boolean };
+export type StartTestAppOptions = {
+  redisAdapter?: boolean;
+  /** Faz 3: ride servisini kurar (verilmezse ride event'leri kapalı; Faz 1–2 testleri böyle koşar). */
+  scheduler?: DispatchScheduler;
+};
 
 export async function startTestApp(opts: StartTestAppOptions = {}) {
   const { db, pool } = createDb(inject('pgUrl'));
@@ -66,9 +72,12 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
       }),
   );
 
-  const { io, realtime, attach } = createRealtime(deps, log, {
+  const { io, realtime, rides, attach } = createRealtime(deps, log, {
     corsOrigin: '*',
     presence,
+    rides: opts.scheduler
+      ? (sink) => createRideService({ db, redis, log, sink, scheduler: opts.scheduler! })
+      : undefined,
     adapter: adapterClients ? createAdapter(adapterClients[0], adapterClients[1]) : undefined,
   });
   // Adapter aboneliklerini namespace oluşturulurken (createRealtime içinde) kuyruğa alır; ioredis komutları
@@ -78,6 +87,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     auth: deps,
     realtime,
     presence,
+    rides,
     authLimiters,
     log,
     corsOrigin: '*',
@@ -217,7 +227,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   }
 
   return {
-    url, deps, db, pool, redis, presence, realtime, io, http,
+    url, deps, db, pool, redis, presence, realtime, rides, io, http,
     registerDriver, registerStand, approvedDriver, approvedStand,
     adminToken, adminAction, loginDriver, loginStand,
     socket, connectOk, connectError, cleanup, close,
