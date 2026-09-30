@@ -37,14 +37,20 @@ pnpm --filter @duraknet/driver-mobile android
 - **Not:** `EXPO_PUBLIC_*` derleme/bundle zamanında gömülür; IP değişirse Metro'yu `--clear` ile yeniden başlat.
 - Kapalı/kaydırılmış uygulama senaryoları için Metro'suz test gerekiyorsa: `pnpm --filter @duraknet/driver-mobile exec expo run:android --variant release` (bu durumda cleartext sorunu için `expo-build-properties` eklenmesi gerekir — bana söyle).
 
-### Yol B — EAS (iOS için zorunlu; Windows'ta iOS yerel derlenemez)
-Şu an repoda `eas.json` yok. iOS cihaz için Apple Developer hesabı ($99/yıl) gerekir; ücretsiz hesapla EAS ile cihaza kurulamaz.
+### Yol B — EAS (seçilen yol; iOS için zorunlu)
+Repoda `apps/driver-mobile/eas.json` (`development` profili: dev client, internal dağıtım, Android APK) ve `expo-dev-client` hazır. Sende yapılacaklar (etkileşimli, bende yapılamaz):
 ```bash
-npm i -g eas-cli && eas login
-cd apps/driver-mobile && eas build:configure
+npm i -g eas-cli
+eas login
+cd apps/driver-mobile
+eas init                      # projeyi Expo hesabına bağlar (app.json'a projectId yazar; commit'le)
 ```
-`eas.json` → `development` profili (`developmentClient: true`, `distribution: internal`, `env.EXPO_PUBLIC_API_URL`). Bu profil `expo-dev-client` paketini ister: `pnpm --filter @duraknet/driver-mobile exec expo install expo-dev-client`. iOS'ta `eas device:create` ile telefonu kaydet. Sonra `eas build --profile development --platform ios|android`, çıkan QR/link ile kur, `pnpm --filter @duraknet/driver-mobile start --dev-client` ile bağlan.
-**iOS (S5) testi yapacaksan Yol B zorunlu.** iOS cihazın yoksa S5 açık kalır.
+1. `eas.json` → `env.EXPO_PUBLIC_API_URL` içindeki `192.168.1.23`'ü PC'nin LAN IP'siyle değiştir (EAS bulutta derler; gitignore'daki `.env` yüklenmez, değer eas.json'dan gömülür).
+2. **Android:** `eas build --profile development --platform android` → çıkan linki telefondan açıp APK'yı kur.
+3. **iOS:** `eas device:create` (telefonda açılan linkle UDID kaydı) → `eas build --profile development --platform ios` (Apple hesabıyla giriş, sertifika/profili EAS üretir) → link/QR ile kur; iOS 16+ için Ayarlar → Gizlilik → Geliştirici Modu açık olmalı.
+4. PC'de `pnpm --filter @duraknet/driver-mobile start --dev-client` → uygulamada listeden/QR'dan Metro'ya bağlan.
+- iOS ATS: dev client'ta yerel ağ HTTP'sine izin var; bağlanmazsa söyle (release'te HTTPS gerekir).
+- IP değişirse yeniden build **gerekmez** sadece JS gömülüyse: `EXPO_PUBLIC_API_URL` bundle zamanında Metro'dan alınır; Metro'yu `--clear` ile başlatıp PC'de `EXPO_PUBLIC_API_URL=...` ortam değişkeniyle ver.
 
 ### Hazırlık verisi
 Şoför hesabı aç ve onayla (admin ortam değişkenleriyle giriş, `POST /auth/login` `{role:'admin',...}` → token; `POST /admin/drivers/:id/approve`). Uygulamadan kayıt → "onay bekliyor" ekranı → admin onayı → giriş. İkinci bir cihaz/hesap gerekmez; "başka cihazdan pasif" testi için PC'den REST ile giriş yapan sahte istemci yeterli.
