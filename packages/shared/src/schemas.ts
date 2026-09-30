@@ -187,3 +187,12 @@ export type RideDriverLocationEvent = z.infer<typeof rideDriverLocationSchema>;
 
 /** `ride_complete` (durak → sunucu): şoför şemasıyla aynı gövde. */
 export const standRideCompleteSchema = rideCompleteSchema;
+
+/** `dn:events:ride` Pub/Sub mesajı (bilgilendirme; kritik iş BullMQ'dadır). */
+export const rideEventMessageSchema = z.object({
+  rideId: z.uuid(),
+  from: rideStatusSchema,
+  to: rideStatusSchema,
+  version: versionSchema,
+});
+export type RideEventMessage = z.infer<typeof rideEventMessageSchema>;

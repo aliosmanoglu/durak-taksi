@@ -9,17 +9,31 @@ import {
   goOnlineSchema,
   locationUpdateSchema,
   NAMESPACES,
+  rideAcceptSchema,
+  rideCancelSchema,
+  rideCompleteSchema,
+  rideCreateSchema,
+  rideDeclineSchema,
+  rideDriverCancelSchema,
   rooms,
+  STAND_EVENTS,
   type Ack,
   type DriverSessionSync,
   type DriverStatusResult,
   type ErrorCode,
+  type RideCancelledEvent,
+  type RideCompletedEvent,
+  type RideCreateResult,
+  type RideSnapshot,
   type StandSessionSync,
 } from '@duraknet/shared';
 import { AppError } from './http/errors';
 import { assertActiveSession, type AuthDeps } from './auth/service';
 import { verifyToken, type VerifiedClaims } from './auth/tokens';
-import type { PresenceService, PresenceState } from './presence/service';
+import type { LocationOutcome, PresenceService, PresenceState } from './presence/service';
+import type { DriverRideSync, RideService } from './rides/service';
+import { createIoSink, type RideEventSink } from './rides/sink';
+import { replyOf, toAckError, validationError } from './socket-util';
 
 export interface Realtime {
   /**
@@ -116,18 +130,6 @@ function registerCommonHandlers(deps: AuthDeps, socket: Socket, log: Logger) {
   socket.on('error', (err) => log.warn({ err: err.message }, 'socket hatası'));
 }
 
-const validationError = { ok: false, error: { code: 'VALIDATION_ERROR', message: 'Geçersiz istek' } } as const;
-
-function replyOf<T>(ack: unknown): (r: Ack<T>) => void {
-  return typeof ack === 'function' ? (ack as (r: Ack<T>) => void) : () => {};
-}
-
-function toAckError(err: unknown, log: Logger): Ack<never> {
-  if (err instanceof AppError) return { ok: false, error: { code: err.code, message: err.message } };
-  log.error({ err: err instanceof Error ? err.message : String(err) }, 'socket handler hatası');
-  return { ok: false, error: { code: 'INTERNAL', message: 'Sunucu hatası' } };
-}
-
 /**
  * Şoför varlık event'leri (CLAUDE.md Bölüm 5, Senaryo 1–2). `ready`, bağlantı kontrolleri (odaya katılma +
  * ikinci durum kontrolü) bitene kadar handler'ları bekletir: istemci `connect` olur olmaz event gönderse
@@ -138,6 +140,7 @@ function registerDriverHandlers(
   deps: AuthDeps,
   socket: Socket,
   presence: PresenceService,
+  rides: RideService | null,
   ready: Promise<boolean>,
   log: Logger,
 ) {
@@ -201,7 +204,7 @@ function registerDriverHandlers(
     if (!(await ready)) return;
     if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
     try {
-      reply({ ok: true, data: driverSessionSync(await presence.getState(driverId())) });
+      reply({ ok: true, data: await driverSessionSync(await presence.getState(driverId()), rides, driverId()) });
     } catch (err) {
       reply(toAckError(err, log));
     }
@@ -211,17 +214,23 @@ function registerDriverHandlers(
   // Şoför offline ise (pasif, hash süresi dolmuş veya sweeper düşürmüş) istemci "Aktif" görünüp çağrı
   // alamaz halde kalmasın diye `session_sync` gönderilir; istemci toggle'ını buna göre düzeltir.
   // Sebep ve sürüm konum Lua'sının kendi yanıtından gelir (ek Redis round-trip yok).
-  // Faz 3: busy şoförün konumu ayrıca `ride:{rideId}` odasına (`ride_driver_location`) yayınlanacak.
+  // Busy (eşleşmiş) şoförün konumu ayrıca yalnızca `ride:{rideId}` odasına (`ride_driver_location`) yayınlanır;
+  // rideId konum Lua'sından gelir (ek Redis turu yok). Throttle'a takılan güncelleme yayınlanmaz.
   socket.on(DRIVER_EVENTS.locationUpdate, async (payload: unknown) => {
     if (!(await ready)) return;
     const parsed = locationUpdateSchema.safeParse(payload);
     if (!parsed.success) return;
     try {
+      const out: LocationOutcome = {};
       const r = await presence.updateLocation(driverId(), {
         location: parsed.data.location,
         heading: parsed.data.heading,
-      });
-      if (typeof r === 'object') socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync(r));
+      }, undefined, out);
+      if (typeof r === 'object') {
+        socket.emit(COMMON_EVENTS.sessionSync, await driverSessionSync(r, rides, driverId()));
+      } else if (r === 'ok' && out.rideId && rides) {
+        rides.publishDriverLocation(out.rideId, parsed.data.location, parsed.data.heading, Date.now());
+      }
     } catch (err) {
       log.warn({ err: err instanceof Error ? err.message : String(err) }, 'konum güncellenemedi');
     }
@@ -230,21 +239,150 @@ function registerDriverHandlers(
 
 /**
  * Şoför `session_sync` gövdesi. `offlineReason` yalnızca offline iken bulunur (alan hiç yazılmaz, `undefined`
- * değil). Faz 3'te aktif ride ve açık çağrılar eklenecek.
+ * değil). `activeRide` (PG'deki `matched` ride) her durumda; `openRequests` yalnızca `available` iken dolar.
  */
-function driverSessionSync(state: PresenceState): DriverSessionSync {
+async function driverSessionSync(state: PresenceState, rides: RideService | null, driverId: string): Promise<DriverSessionSync> {
+  const extra: DriverRideSync = rides ? await rides.driverSync(driverId, state.status) : { openRequests: [] };
   return {
     driverStatus: state.status,
     ...(state.status === 'offline' ? { offlineReason: state.offlineReason ?? 'not_online' } : {}),
     presenceVersion: state.presenceVersion,
-    openRequests: [],
+    ...(extra.activeRide ? { activeRide: extra.activeRide } : {}),
+    openRequests: extra.openRequests,
   };
+}
+
+/** Şoför ride event'leri: kabul, ret, şoför iptali, tamamlama (CLAUDE.md Bölüm 6). */
+function registerDriverRideHandlers(
+  deps: AuthDeps,
+  socket: Socket,
+  presence: PresenceService,
+  rides: RideService,
+  ready: Promise<boolean>,
+  log: Logger,
+) {
+  const claims = () => dataOf(socket).auth;
+
+  socket.on(DRIVER_EVENTS.rideAccept, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<RideSnapshot>(ack);
+    if (!(await ready)) return;
+    const parsed = rideAcceptSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    const id = claims().sub;
+    try {
+      await assertActiveSession(deps, claims());
+    } catch (err) {
+      reply(toAckError(err, log));
+      socket.disconnect(true);
+      return;
+    }
+    let snapshot: RideSnapshot;
+    try {
+      snapshot = await rides.accept(id, parsed.data.rideId);
+    } catch (err) {
+      return reply(toAckError(err, log));
+    }
+    // Askıya alma yarışı: kontrol ile kabul arasında hesap askıya alındıysa eşleşme geri verilir
+    // (askıya alma yolu releaseDriverForSuspension çağırmış olabilir; işlem idempotenttir) ve şoför offline olur.
+    try {
+      await assertActiveSession(deps, claims());
+    } catch (err) {
+      if (err instanceof AppError) {
+        await rides.releaseDriverForSuspension(id).catch((e: unknown) =>
+          log.error({ err: e instanceof Error ? e.message : String(e) }, 'askıdaki şoförün çağrısı bırakılamadı'),
+        );
+        await presence.forceOffline(id).catch(() => undefined);
+        reply(toAckError(err, log));
+        socket.disconnect(true);
+        return;
+      }
+    }
+    reply({ ok: true, data: snapshot });
+  });
+
+  socket.on(DRIVER_EVENTS.rideDecline, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<undefined>(ack);
+    if (!(await ready)) return;
+    const parsed = rideDeclineSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      await rides.decline(claims().sub, parsed.data.rideId);
+      reply({ ok: true });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+
+  socket.on(DRIVER_EVENTS.rideDriverCancel, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<{ rideId: string; version: number }>(ack);
+    if (!(await ready)) return;
+    const parsed = rideDriverCancelSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await rides.driverCancel(claims().sub, parsed.data) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+
+  socket.on(DRIVER_EVENTS.rideComplete, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<RideCompletedEvent>(ack);
+    if (!(await ready)) return;
+    const parsed = rideCompleteSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await rides.complete({ role: 'driver', id: claims().sub }, parsed.data) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+}
+
+/** Durak ride event'leri: çağrı aç, iptal, tamamla. */
+function registerStandHandlers(socket: Socket, rides: RideService, ready: Promise<boolean>, log: Logger) {
+  const standId = () => dataOf(socket).auth.sub;
+
+  socket.on(STAND_EVENTS.rideCreate, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<RideCreateResult>(ack);
+    if (!(await ready)) return;
+    const parsed = rideCreateSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await rides.createRide(standId(), parsed.data) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+
+  socket.on(STAND_EVENTS.rideCancel, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<RideCancelledEvent>(ack);
+    if (!(await ready)) return;
+    const parsed = rideCancelSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await rides.standCancel(standId(), parsed.data) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
+
+  socket.on(STAND_EVENTS.rideComplete, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<RideCompletedEvent>(ack);
+    if (!(await ready)) return;
+    const parsed = rideCompleteSchema.safeParse(payload);
+    if (!parsed.success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await rides.complete({ role: 'stand', id: standId() }, parsed.data) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
 }
 
 /** `presence: null` (yalnızca kimlik/taşıma testleri) iken gönderilen varlık durumu. */
 const noPresenceState = (): PresenceState => ({ status: 'offline', offlineReason: 'not_online', presenceVersion: Date.now() });
 
-type NamespaceOpts = { presence: PresenceService | null };
+type NamespaceOpts = { presence: PresenceService | null; rides: RideService | null };
 
 function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: Logger, opts: NamespaceOpts) {
   nsp.use(authMiddleware(deps, role));
@@ -256,7 +394,11 @@ function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: L
     let markReady!: (ok: boolean) => void;
     const ready = new Promise<boolean>((r) => (markReady = r));
     // Handler'lar hemen kaydedilir (erken gelen event'ler kaybolmasın), ama `ready` çözülene kadar bekler.
-    if (role === 'driver' && opts.presence) registerDriverHandlers(deps, socket, opts.presence, ready, log);
+    if (role === 'driver' && opts.presence) {
+      registerDriverHandlers(deps, socket, opts.presence, opts.rides, ready, log);
+      if (opts.rides) registerDriverRideHandlers(deps, socket, opts.presence, opts.rides, ready, log);
+    }
+    if (role === 'stand' && opts.rides) registerStandHandlers(socket, opts.rides, ready, log);
 
     try {
       await socket.join(roomOf(role, claims.sub));
@@ -273,9 +415,14 @@ function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: L
     try {
       if (role === 'driver') {
         const state = opts.presence ? await opts.presence.getState(claims.sub) : noPresenceState();
-        socket.emit(COMMON_EVENTS.sessionSync, driverSessionSync(state));
+        const sync = await driverSessionSync(state, opts.rides, claims.sub);
+        // Eşleşmiş ride varsa soket ride odasına katılır (yeniden bağlanma restorasyonu).
+        if (sync.activeRide) await socket.join(rooms.ride(sync.activeRide.rideId));
+        socket.emit(COMMON_EVENTS.sessionSync, sync);
       } else {
-        const sync: StandSessionSync = { activeRides: [] }; // Faz 3
+        const activeRides = opts.rides ? await opts.rides.standSync(claims.sub) : [];
+        for (const r of activeRides) if (r.status === 'matched') await socket.join(rooms.ride(r.rideId));
+        const sync: StandSessionSync = { activeRides };
         socket.emit(COMMON_EVENTS.sessionSync, sync);
       }
     } catch (err) {
@@ -293,6 +440,11 @@ export type RealtimeOptions = {
    * event'leri kaydedilmez, `session_sync` `offline` gönderir.
    */
   presence: PresenceService | null;
+  /**
+   * Ride servisi fabrikası (Faz 3). Socket.io sunucusu burada kurulduğu için servis, odalara yayın yapan
+   * RideEventSink'i fabrika argümanı olarak alır. Verilmezse ride event'leri kaydedilmez (yalnızca kimlik/varlık testleri).
+   */
+  rides?: ((sink: RideEventSink) => RideService) | null;
   /** Çok node'lu kurulum için socket.io adapter fabrikası (ör. `createAdapter(pub, sub)`). */
   adapter?: ServerOptions['adapter'];
 };
@@ -311,15 +463,16 @@ export function createRealtime(deps: AuthDeps, log: Logger, opts: RealtimeOption
   });
   // Ana namespace kullanılmıyor; kimliksiz bağlantıları reddet.
   io.use((_socket, next) => next(socketError('FORBIDDEN', 'Geçersiz namespace')));
-  setupNamespace(io.of(NAMESPACES.driver), deps, 'driver', log, { presence: opts.presence });
-  setupNamespace(io.of(NAMESPACES.stand), deps, 'stand', log, { presence: null });
+  const rides = opts.rides ? opts.rides(createIoSink(io)) : null;
+  setupNamespace(io.of(NAMESPACES.driver), deps, 'driver', log, { presence: opts.presence, rides });
+  setupNamespace(io.of(NAMESPACES.stand), deps, 'stand', log, { presence: null, rides });
 
   const realtime: Realtime = {
     disconnectAccount(role, id) {
       io.of(NAMESPACES[role]).in(roomOf(role, id)).disconnectSockets(true);
     },
   };
-  return { io, realtime, attach: (httpServer: HttpServer) => io.attach(httpServer) };
+  return { io, realtime, rides, attach: (httpServer: HttpServer) => io.attach(httpServer) };
 }
 
 export const noopRealtime: Realtime = { disconnectAccount: () => {} };

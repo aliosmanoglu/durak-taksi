@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { REMINDER } from '@duraknet/shared';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -13,6 +14,8 @@ const envSchema = z.object({
   ADMIN_PASSWORD_HASH: z.string().startsWith('$argon2', 'argon2 hash olmalı'),
   // Artırılınca tüm yönetici oturumları düşer.
   ADMIN_TOKEN_VERSION: z.coerce.number().int().nonnegative().default(0),
+  // İlk `ride_still_open` hatırlatmasının gecikmesi (sn); sonrakiler worker'da REMINDER_EVERY_SEC ile.
+  REMINDER_FIRST_SEC: z.coerce.number().positive().default(REMINDER.FIRST_SEC),
   // Express 'trust proxy': 'false' | önümüzdeki proxy sayısı (ör. 1) | güvenilen adresler ('loopback, 10.0.0.0/8').
   // Yanlış değer rate limit'i atlatılabilir veya tüm istemcileri tek IP gösterir; dağıtım topolojisine göre ayarla.
   TRUST_PROXY: z

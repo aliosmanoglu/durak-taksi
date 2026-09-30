@@ -12,13 +12,16 @@
   },
   "dependencies": {
     "@duraknet/shared": "workspace:*",
+    "@socket.io/redis-emitter": "^5.1.0",
     "bullmq": "^6.3.9",
     "ioredis": "^6.0.0",
+    "pg": "^8.23.0",
     "pino": "^10.3.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@testcontainers/redis": "^12.2.0",
+    "@types/pg": "^8.23.1",
     "testcontainers": "^12.2.0"
   }
 }

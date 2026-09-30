@@ -103,8 +103,22 @@ export const jobIds = {
   reminder: (rideId: string, n: number) => `reminder:${rideId}:${n}`,
 } as const;
 
+/**
+ * Arama turu: ride her `searching`'e girişinde (ilk giriş + şoför iptali/askıya alma sonrası yeniden arama) yeni bir
+ * tur başlar. Tur kimliği = girişteki `rides.version` (durum geçişlerinde artar; `searching` içinde sabit kalır).
+ * İlk turda `version = 1`, yani tur indeksi 0 ve job numarası düz dalga numarasıdır (`dispatch:{id}:1`).
+ * Sonraki turlarda numara `tur indeksi * ROUND_JOB_STRIDE + dalga` olur: eski turun bekleyen job'ı ile çakışmaz.
+ * Dalga/hatırlatma job'ı `searching` ∧ `version === searchVersion` değilse eski turdandır ve kendiliğinden biter.
+ */
+export const ROUND_JOB_STRIDE = 1_000_000;
+export const roundJobNumber = (searchVersion: number, n: number) => (searchVersion - 1) * ROUND_JOB_STRIDE + n;
+
+/** Dispatch / hatırlatma job verisi. `wave`/`n` tur içi 1 tabanlı sıradır. */
+export type DispatchJobData = { rideId: string; searchVersion: number; wave: number };
+export type ReminderJobData = { rideId: string; searchVersion: number; n: number };
+
 /** Kuyruk adları. */
-export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder' } as const;
+export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder', nearby: 'nearby' } as const;
 
 /** `dn:ride:{id}` hash alan adları. `status` değerleri `RideStatus`. */
 export const RIDE_HASH = {
@@ -116,6 +130,9 @@ export const RIDE_HASH = {
   pickupLng: 'pickupLng',
   radius: 'radius',
   wave: 'wave',
+  /** Sıradaki (bekleyen) dispatch / hatırlatma job'ının id'si; `dn:events:ride` dinleyicisi kapanışta siler. */
+  dispatchJob: 'dispatchJob',
+  reminderJob: 'reminderJob',
 } as const;
 
 /** İç olay kanalı `dn:events:ride` (Pub/Sub; yalnızca bilgilendirme, kritik iş BullMQ'dadır). */

@@ -46,7 +46,8 @@ export function authRoutes(
     const claims = authOf(res);
     const role = await logoutAllDevices(deps, claims);
     realtime.disconnectAccount(role, claims.sub);
-    if (role === 'driver') await presence?.forceOffline(claims.sub);
+    // Faz 3 kararı (a): busy şoför (eşleşmiş ride) düşürülmez; yeniden girişte session_sync.activeRide ile devam eder.
+    if (role === 'driver') await presence?.forceOfflineUnlessBusy(claims.sub);
     res.json({ ok: true });
   });
 

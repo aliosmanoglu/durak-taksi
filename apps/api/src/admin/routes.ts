@@ -6,12 +6,13 @@ import type { AuthDeps } from '../auth/service';
 import { latOf, lngOf } from '../db';
 import { errors, parseBody } from '../http/errors';
 import type { PresenceService } from '../presence/service';
+import type { RideService } from '../rides/service';
 import type { Realtime } from '../realtime';
 
 const listQuery = z.object({ status: z.enum(ACCOUNT_STATUSES).optional() });
 const idParam = z.object({ id: z.uuid() });
 
-export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService): Router {
+export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService): Router {
   const r = Router();
   r.use('/admin', requireAuth(deps, 'admin'));
 
@@ -83,6 +84,8 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .executeTakeFirst();
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('driver', id);
+    // Faz 3 kararı (b): eşleşmiş ride varsa searching'e döner (sebep driver_suspended); sonra şoför offline olur.
+    await rides?.releaseDriverForSuspension(id);
     await presence?.forceOffline(id);
     res.json({ ok: true, data: row });
   });

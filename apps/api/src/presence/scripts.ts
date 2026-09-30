@@ -63,7 +63,7 @@ return {'offline', v}
 
 // KEYS: 1=dn:driver:{id} 2=geo 3=heartbeat 4=dn:ratelimit:loc:{id} 5=dn:driver:{id}:pv
 // ARGV: 1=driverId 2=lat 3=lng 4=heading('' = yok) 5=now(ms) 6=hashTtlS 7=throttleMs
-// Döner: {1} = yazıldı, {0} = throttle,
+// Döner: {1, status, rideId} = yazıldı (rideId yalnızca busy şoförde dolu; ride odasına konum yayını için), {0} = throttle,
 //        {-1, status, offlineReason, presenceVersion} = offline/hash yok (konum yazılmadı; eksik alan '').
 // Offline yanıtı sebep + sürümü taşır: realtime ek round-trip olmadan `session_sync` gönderir.
 // Durum kontrolü throttle'dan önce: offline şoförün düşen güncellemeleri throttle hakkı tüketmez.
@@ -85,7 +85,7 @@ redis.call('ZADD', KEYS[3], ARGV[5], ARGV[1])
 if st == 'available' then
   redis.call('GEOADD', KEYS[2], ARGV[3], ARGV[2], ARGV[1])
 end
-return {1}
+return {1, st, redis.call('HGET', KEYS[1], '${F.rideId}') or ''}
 `;
 
 // KEYS: 1=dn:driver:{id} 2=dn:driver:{id}:pv

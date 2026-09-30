@@ -8,6 +8,7 @@ import { authRoutes } from './auth/routes';
 import type { AuthDeps } from './auth/service';
 import { errorHandler } from './http/errors';
 import type { PresenceService } from './presence/service';
+import type { RideService } from './rides/service';
 import { noopRealtime, type Realtime } from './realtime';
 import { standRoutes } from './stands/routes';
 
@@ -21,6 +22,8 @@ type BaseAppOptions = {
   /** İzin verilen origin listesi; '*' yalnızca geliştirme içindir. */
   corsOrigin?: string[] | '*';
   log?: Logger;
+  /** Ride servisi (Faz 3): askıya almada eşleşmiş ride'ı yeniden aramaya döndürmek için. Yoksa yalnızca presence temizlenir. */
+  rides?: RideService | null;
   /** Load balancer arkasında gerçek istemci IP'si için (rate limit). */
   trustProxy?: boolean | number | string;
 };
@@ -70,7 +73,7 @@ export function createApp(opts: AppOptions = {}) {
   if (opts.auth) {
     const realtime = opts.realtime ?? noopRealtime;
     app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters(), realtime, opts.presence ?? undefined));
-    app.use(adminRoutes(opts.auth, realtime, opts.presence ?? undefined));
+    app.use(adminRoutes(opts.auth, realtime, opts.presence ?? undefined, opts.rides ?? undefined));
     app.use(standRoutes(opts.auth));
   }
 
