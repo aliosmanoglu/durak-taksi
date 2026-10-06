@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LatLng } from '@duraknet/shared';
 import { distanceMeters } from '../lib/geo';
+import { addressMismatch } from '../lib/pacer';
 import { NOTE_MAX, QUICK_NOTES, composeNote, noteForRequest } from '../lib/notes';
 import { findDuplicate } from '../lib/rides';
 import { T } from '../lib/texts';
@@ -43,6 +44,7 @@ export function NewRideForm({ me }: { me: Me }) {
   const [hits, setHits] = useState<GeoHit[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState(false);
+  const [mismatch, setMismatch] = useState(false);
 
   const [dropoffOn, setDropoffOn] = useState(false);
   const [dropoff, setDropoff] = useState<LatLng | null>(null);
@@ -67,8 +69,10 @@ export function NewRideForm({ me }: { me: Me }) {
     reverseCtl.current[kind]?.abort();
     const ctl = new AbortController();
     reverseCtl.current[kind] = ctl;
-    const text = await geocoder.reverse(p, timeoutSignal(REVERSE_TIMEOUT_MS, ctl.signal)).catch(() => null);
-    if (reverseCtl.current[kind] !== ctl) return; // yeni arama devraldı
+    const to = timeoutSignal(REVERSE_TIMEOUT_MS, ctl.signal);
+    const text = await geocoder.reverse(p, to.signal).catch(() => null);
+    to.clear();
+    if (reverseCtl.current[kind] !== ctl || ctl.signal.aborted) return; // yeni arama devraldı / iptal edildi
     if (kind === 'pickup') {
       if (!addressEdited.current) {
         if (text) setAddress(text);
@@ -101,12 +105,16 @@ export function NewRideForm({ me }: { me: Me }) {
     if (mode !== 'pickup') return;
     setPin(c);
     setHits(null);
+    setMismatch(addressMismatch(addressEdited.current, true));
     if (!addressEdited.current) setGeoStatus('loading');
     clearTimeout(debounce.current);
     debounce.current = setTimeout(() => void reverseInto('pickup', c), REVERSE_DEBOUNCE_MS);
   }
 
   function goTo(p: LatLng, label?: string) {
+    clearTimeout(debounce.current);
+    reverseCtl.current.pickup?.abort(); // uçuştaki ters geocoding eski konumun adresini yazmasın
+    reverseCtl.current.pickup = undefined;
     setPin(p);
     setCenter(p);
     setHits(null);
@@ -114,8 +122,10 @@ export function NewRideForm({ me }: { me: Me }) {
     if (label) {
       setAddress(label);
       addressEdited.current = false;
+      setMismatch(false);
       setGeoStatus('idle');
     } else {
+      setMismatch(addressMismatch(addressEdited.current, true));
       if (!addressEdited.current) setGeoStatus('loading');
       void reverseInto('pickup', p);
     }
@@ -124,6 +134,7 @@ export function NewRideForm({ me }: { me: Me }) {
   function onAddressChange(v: string) {
     setAddress(v);
     addressEdited.current = v.trim().length > 0;
+    setMismatch(false);
     if (geoStatus !== 'idle') setGeoStatus('idle');
     setSearchError(false);
   }
@@ -133,12 +144,14 @@ export function NewRideForm({ me }: { me: Me }) {
     if (q.length < 3 || searching) return;
     setSearching(true);
     setSearchError(false);
+    const to = timeoutSignal(6_000);
     try {
-      setHits(await geocoder.search(q, pin, timeoutSignal(6_000)));
+      setHits(await geocoder.search(q, pin, to.signal));
     } catch {
       setHits(null);
       setSearchError(true);
     }
+    to.clear();
     setSearching(false);
   }
 
@@ -350,6 +363,7 @@ export function NewRideForm({ me }: { me: Me }) {
         </div>
       )}
 
+      {mismatch && <Banner tone="warn" role="status">{T.form.addressMismatch}</Banner>}
       {duplicate && <Banner tone="warn">{T.form.duplicate(duplicate.shortCode || '—')}</Banner>}
       {error && <Banner tone="error" role="alert">{error}</Banner>}
       {hint && <p className="text-base font-semibold text-slate-700 dark:text-slate-200" role="status">{hint}</p>}

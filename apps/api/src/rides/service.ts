@@ -6,7 +6,7 @@ import { randomInt } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import {
-  DISPATCH, DRIVER_EVENTS, DRIVER_HASH, PRESENCE, redisKeys, RIDE_HASH, RIDE_EVENTS_CHANNEL, RIDE_ROOM_EVENTS,
+  DISPATCH, DRIVER_EVENTS, DRIVER_SUSPENDED_REASON, DRIVER_HASH, PRESENCE, redisKeys, RIDE_HASH, RIDE_EVENTS_CHANNEL, RIDE_ROOM_EVENTS,
   STAND_EVENTS,
   type LatLng, type RideCancelledEvent, type RideCompletedEvent, type RideCreateResult,
   type RideDriverCancelledEvent, type RideEventMessage, type RideMatchedEvent, type RideRequest,
@@ -338,13 +338,13 @@ export function createRideService(opts: RideServiceOptions): RideService {
       if (!ride) return;
       let tr: TransitionResult;
       try {
-        tr = await machine.transition({ rideId: ride.rideId, reason: 'driver_suspended', actor: 'system', driverId });
+        tr = await machine.transition({ rideId: ride.rideId, reason: DRIVER_SUSPENDED_REASON, actor: 'system', driverId });
       } catch (err) {
         // Araya giren durak iptali / tamamlama: serbest bırakılacak bir şey kalmadı.
         if (err instanceof AppError) return;
         throw err;
       }
-      await afterReturnToSearching(tr, driverId, 'driver_suspended');
+      await afterReturnToSearching(tr, driverId, DRIVER_SUSPENDED_REASON);
     },
 
     async complete(actor, input) {

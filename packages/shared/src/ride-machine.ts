@@ -14,6 +14,8 @@ export const RIDE_TRANSITION_REASONS = [
   'stand_cancelled', // searching|matched → cancelled
   'completed', // matched → completed
 ] as const;
+/** `ride_driver_cancelled.reason` ve geçiş sebebi: şoför yönetici askısıyla düştü (şoför kendi vazgeçmedi). */
+export const DRIVER_SUSPENDED_REASON = 'driver_suspended' as const;
 export type RideTransitionReason = (typeof RIDE_TRANSITION_REASONS)[number];
 
 export type RideTransition = {

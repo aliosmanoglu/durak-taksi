@@ -3,6 +3,7 @@
 // Nominatim kullanım politikası: otomatik tamamlama yasaktır, saniyede en çok 1 istek. Bu yüzden
 // arama yalnızca görevli ARA'ya bastığında yapılır; ters geocoding pin durunca tek istektir.
 import type { LatLng } from '@duraknet/shared';
+import { createPacer } from '../lib/pacer';
 import { formatNominatimAddress, type NominatimAddress } from '../lib/geocode-format';
 import { GEOCODER_URL } from './config';
 
@@ -15,6 +16,25 @@ export interface Geocoder {
   search(query: string, near: LatLng, signal: AbortSignal): Promise<GeoHit[]>;
 }
 
+const pacer = createPacer(1_000);
+
+/** Nominatim sınırı: istekler en az 1 sn arayla gider; beklerken iptal edilebilir. */
+function pace(signal: AbortSignal): Promise<void> {
+  const wait = pacer.reserve(Date.now());
+  if (wait <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, wait);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new DOMException('aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 type NominatimItem = { lat?: string; lon?: string; display_name?: string; address?: NominatimAddress };
 
 class NominatimGeocoder implements Geocoder {
@@ -22,6 +42,7 @@ class NominatimGeocoder implements Geocoder {
 
   async reverse(p: LatLng, signal: AbortSignal): Promise<string | null> {
     const url = `${this.base}/reverse?format=jsonv2&addressdetails=1&accept-language=tr&zoom=18&lat=${p.lat}&lon=${p.lng}`;
+    await pace(signal);
     const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
     if (!res.ok) throw new Error(`geocode ${res.status}`);
     const j = (await res.json()) as NominatimItem & { error?: string };
@@ -35,6 +56,7 @@ class NominatimGeocoder implements Geocoder {
     const url =
       `${this.base}/search?format=jsonv2&addressdetails=1&accept-language=tr&countrycodes=tr&limit=5` +
       `&viewbox=${viewbox}&q=${encodeURIComponent(query)}`;
+    await pace(signal);
     const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
     if (!res.ok) throw new Error(`geocode ${res.status}`);
     const arr = (await res.json()) as NominatimItem[];
@@ -51,8 +73,8 @@ class NominatimGeocoder implements Geocoder {
 
 export const geocoder: Geocoder = new NominatimGeocoder(GEOCODER_URL);
 
-/** `ms` sonra iptal eden sinyal (ters geocoding için 4 sn). */
-export function timeoutSignal(ms: number, parent?: AbortSignal): AbortSignal {
+/** `ms` sonra iptal eden sinyal (ters geocoding için 4 sn). `clear()` zamanlayıcıyı ve dinleyiciyi temizler. */
+export function timeoutSignal(ms: number, parent?: AbortSignal): { signal: AbortSignal; clear: () => void } {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
   const stop = () => {
@@ -63,5 +85,11 @@ export function timeoutSignal(ms: number, parent?: AbortSignal): AbortSignal {
     if (parent.aborted) stop();
     else parent.addEventListener('abort', stop, { once: true });
   }
-  return ctl.signal;
+  return {
+    signal: ctl.signal,
+    clear: () => {
+      clearTimeout(t);
+      parent?.removeEventListener('abort', stop);
+    },
+  };
 }

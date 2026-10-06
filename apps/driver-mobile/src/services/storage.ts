@@ -2,6 +2,7 @@
 // access token yalnızca bellektedir, şifre hiçbir yerde saklanmaz (tasarım Bölüm 8).
 import * as SecureStore from 'expo-secure-store';
 import { rideSnapshotSchema, type RideSnapshot } from '@duraknet/shared';
+import { serializeActiveRide } from '@/lib/rides/persist';
 import { isNavAppId, type NavAppId } from '@/lib/navigation';
 import type { Profile } from '@/lib/store';
 
@@ -30,7 +31,8 @@ async function put(key: string, value: string | null): Promise<void> {
     if (value == null) await SecureStore.deleteItemAsync(key, opts);
     else await SecureStore.setItemAsync(key, value, opts);
   } catch {
-    // Yazılamadıysa bir sonraki güncellemede tekrar denenir.
+    // Yazılamadıysa eski değer diskte kalmasın (bayat yolculuk soğuk açılışta dirilmesin): anahtar silinir.
+    if (value != null) await SecureStore.deleteItemAsync(key, opts).catch(() => undefined);
   }
 }
 
@@ -74,7 +76,7 @@ export const storage = {
       return null;
     }
   },
-  setActiveRide: (r: RideSnapshot | null) => put(KEYS.activeRide, r ? JSON.stringify(r) : null),
+  setActiveRide: (r: RideSnapshot | null) => put(KEYS.activeRide, r ? serializeActiveRide(r) : null),
 
   /** Çağrı sesi tercihi (Q6): cihaz tercihi; çıkışta silinmez. Varsayılan açık. */
   async getSoundEnabled(): Promise<boolean> {

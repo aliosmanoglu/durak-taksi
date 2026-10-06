@@ -100,6 +100,12 @@ export const rideSnapshotSchema = z.object({
 });
 export type RideSnapshot = z.infer<typeof rideSnapshotSchema>;
 
+/** Durak `session_sync` gövdesi (`StandSessionSync` tipinin çalışma zamanı şeması); `serverTime` zorunlu. */
+export const standSessionSyncSchema = z.object({
+  activeRides: z.array(rideSnapshotSchema),
+  serverTime: isoDateSchema,
+});
+
 /** `ride_create` ack verisi. */
 export const rideCreateResultSchema = z.object({ rideId: z.uuid(), shortCode: z.string() });
 export type RideCreateResult = z.infer<typeof rideCreateResultSchema>;

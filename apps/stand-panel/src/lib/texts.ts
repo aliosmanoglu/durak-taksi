@@ -48,6 +48,7 @@ export const T = {
     needPin: 'Haritada alış noktasını seçin.',
     needAddress: 'Alış adresini yazın.',
     addressManual: 'Adres bulunamadı. Adresi yazın.',
+    addressMismatch: 'Adres, haritadaki işaretle uyuşmayabilir. Adresi kontrol edin.',
     addressSearching: 'Adres aranıyor…',
     pickupLabel: 'Alış adresi',
     pickupPlaceholder: 'Adresi yazın ya da haritadan seçin',

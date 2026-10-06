@@ -14,3 +14,16 @@ export function refreshDelayMs(accessExpiresInSec: number): number {
 export function backoffMs(attempt: number): number {
   return Math.min(5, Math.max(1, attempt)) * 1000;
 }
+
+export type RefreshResult = 'ok' | 'network' | 'rejected';
+export type AfterRefresh = { kind: 'connect' } | { kind: 'retry'; delayMs: number } | { kind: 'stop' };
+
+/**
+ * Token yenileme sonucundan sonra ne yapılacağı: `ok` → socket'i yeniden bağla; `network` (ağ/429/5xx) →
+ * geri çekilmeyle yeniden dene (sessizce bırakma); `rejected` → oturum zaten kapandı, dur.
+ */
+export function afterRefresh(outcome: RefreshResult, attempt: number): AfterRefresh {
+  if (outcome === 'ok') return { kind: 'connect' };
+  if (outcome === 'network') return { kind: 'retry', delayMs: backoffMs(attempt) };
+  return { kind: 'stop' };
+}

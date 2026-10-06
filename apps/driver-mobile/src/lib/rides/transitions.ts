@@ -220,6 +220,10 @@ export function onAcceptAck(s: RideCtx, rideId: string, r: AcceptOutcome, now: n
     if (cur && cur.rideId === r.ride.rideId && cur.version > r.ride.version) {
       return step({ accepting: null }); // ride_accepted event'i daha yeni sürümle zaten geldi
     }
+    // Ack'ten önce daha yeni bir olay (ör. durak iptali) işlendiyse eski ack yolculuğu diriltmez; sync belirler.
+    if (isStale(s.rideVersions, r.ride.rideId, r.ride.version)) {
+      return step({ accepting: null }, [{ type: 'requestSync' }]);
+    }
     return step(adoptActiveRide(s, r.ride), [
       { type: 'cancelDeclineFlush' },
       { type: 'stopRing' },
@@ -317,16 +321,22 @@ export function undoDecline(s: RideCtx, now: number): RideStep {
   );
 }
 
-/** `ride_decline` ack'i: yalnızca `INTERNAL`'da çağrı yeniden görünür; diğer hatalar sessizdir. */
+/**
+ * `ride_decline` ack'i: `INTERNAL` ve zaman aşımı/ağ hatasında (sonuç bilinmiyor) çağrı yeniden görünür ki
+ * şoför tekrar deneyebilsin; diğer hatalar sessizdir. Şoför artık `available` değilse (pasif/eşleşmiş) geri konmaz.
+ */
 export function onDeclineAck(
   s: RideCtx,
   request: OpenRequest,
   r: { ok: true } | { ok: false; code: ErrorCode } | { ok: false; timeout: true },
   now: number,
 ): RideStep {
-  if (r.ok || 'timeout' in r) return NOOP;
-  if (isSessionEndingCode(r.code)) return step({}, [{ type: 'sessionEnd', reason: sessionEndReasonOf(r.code) }]);
-  if (r.code !== 'INTERNAL') return NOOP;
+  if (r.ok) return NOOP;
+  if (!('timeout' in r)) {
+    if (isSessionEndingCode(r.code)) return step({}, [{ type: 'sessionEnd', reason: sessionEndReasonOf(r.code) }]);
+    if (r.code !== 'INTERNAL') return NOOP;
+  }
+  if (s.server === 'offline' || s.server === 'busy') return NOOP;
   if (s.activeRide || s.requests.some((x) => x.rideId === request.rideId)) return NOOP;
   const requests = sortRequests([...s.requests, request]);
   return step(
@@ -497,6 +507,9 @@ export function applyRideSync(s: RideCtx, sync: RideSyncParts, now: number): Rid
 
   // --- Açık çağrılar (eşleşmişken liste boştur)
   const pending = s.pendingDecline?.request.rideId;
+  // Reddi bekleyen çağrı sunucuda artık açık değilse (kapandı) GERİ AL şeridi kalkar; kapanmış çağrı geri gelmez.
+  const pendingClosed = pending != null && (activeRide != null || !sync.openRequests.some((r) => r.rideId === pending));
+  if (pendingClosed) effects.push({ type: 'cancelDeclineFlush' });
   const incoming: OpenRequest[] = activeRide
     ? []
     : sortRequests(
@@ -539,6 +552,7 @@ export function applyRideSync(s: RideCtx, sync: RideSyncParts, now: number): Rid
       requests: incoming,
       unseen: [...s.unseen.filter((id) => incomingIds.has(id)), ...added.map((r) => r.rideId)],
       accepting: keptAccepting,
+      ...(pendingClosed ? { pendingDecline: null } : {}),
       // Yolculuk sunucuda artık yoksa süren eylem de biter.
       ...(!activeRide ? { rideAction: null, rideMessage: null } : {}),
       ...(activeRide ? { closed: null } : {}),
@@ -551,9 +565,14 @@ export function applyRideSync(s: RideCtx, sync: RideSyncParts, now: number): Rid
 /** Yerel varlık `available` dışına çıktı (pasif oldu): çağrı listesi temizlenir, bekleyen ret düşer. */
 export function clearRequests(s: RideCtx): RideStep {
   if (s.requests.length === 0 && !s.pendingDecline && !s.accepting) return NOOP;
+  // Bekleyen ret şoförün bilinçli niyetidir: sessizce düşmez, hemen gönderilir (bağlantı yoksa emit zaman aşımına
+  // düşer; çağrı sunucuda açık kalırsa sonraki session_sync zaten listeyi belirler).
+  const flush: RideEffect[] = s.pendingDecline
+    ? [{ type: 'emitDecline', rideId: s.pendingDecline.request.rideId, request: s.pendingDecline.request }]
+    : [];
   return step(
     { requests: [], focusedId: null, unseen: [], pendingDecline: null, accepting: null },
-    [{ type: 'cancelDeclineFlush' }, { type: 'stopRing' }],
+    [{ type: 'cancelDeclineFlush' }, ...flush, { type: 'stopRing' }],
   );
 }
 

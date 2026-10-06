@@ -129,10 +129,11 @@ export async function completeRide(rideId: string): Promise<CloseOutcome> {
     return { kind: 'unknown' };
   }
   if (res.code === 'INVALID_TRANSITION') {
-    // Büyük olasılıkla şoför tamamladı: sessizce tamamlandı görünümü; senkron doğrular.
-    updateRides((s) => closeLocal(s, rideId, 'completed', serverNow()));
+    // Neden bilinmiyor (şoför tamamladı, durak iptal etti ya da şoför bıraktı): iyimser kapatma yok;
+    // senkron gerçeği getirir, kullanıcıya "durum değişti" denir.
+    markQuiet(rideId);
     requestSync();
-    return { kind: 'ok' };
+    return { kind: 'changed' };
   }
   if (res.code === 'VERSION_CONFLICT' || res.code === 'NOT_FOUND') {
     markQuiet(rideId);

@@ -15,7 +15,7 @@ import {
   rideDriverCancelledSchema,
   rideMatchedSchema,
   rideSearchingSchema,
-  rideSnapshotSchema,
+  standSessionSyncSchema,
   rideStillOpenSchema,
   type Ack,
   type ErrorCode,
@@ -33,7 +33,7 @@ import {
   type RidesState,
 } from '../lib/rides';
 import { isErrorCode } from '../lib/api-result';
-import { backoffMs } from '../lib/session-policy';
+import { afterRefresh, backoffMs } from '../lib/session-policy';
 import { T } from '../lib/texts';
 import { announce, noteAlert, pushToast, updateRides, useStore } from '../store';
 import { ACK_TIMEOUT_MS, API_URL } from './config';
@@ -81,19 +81,39 @@ export function handleAuthCode(code: ErrorCode | 'TIMEOUT' | 'NETWORK'): boolean
   if (code === 'ACCOUNT_SUSPENDED') return endSession(undefined, 'suspended'), true;
   if (code === 'ACCOUNT_PENDING') return endSession(undefined, 'pending'), true;
   if (code === 'UNAUTHORIZED') {
-    void refreshAccess().then((o) => o === 'ok' && socket && !socket.connected && socket.connect());
+    refreshThenConnect();
     return true;
   }
   return false;
 }
 
+/**
+ * Access'i yenileyip socket'i yeniden bağlar. Ağ hatasında geri çekilmeyle tekrar dener (sessizce bırakmaz);
+ * reddedilirse oturum zaten kapanmıştır. `auth_expired` için de kullanılır: başarılı yenileme `onToken` ile
+ * `auth_refresh` gönderir, bağlı değilse burada bağlanır.
+ */
+function refreshThenConnect(attempt = 1): void {
+  clearTimeout(reconnectTimer);
+  const s = socket;
+  if (!s) return;
+  void refreshAccess().then((o) => {
+    if (socket !== s) return;
+    const plan = afterRefresh(o, attempt);
+    if (plan.kind === 'connect') {
+      if (!s.connected) s.connect();
+    } else if (plan.kind === 'retry') {
+      reconnectTimer = setTimeout(() => refreshThenConnect(attempt + 1), plan.delayMs);
+    }
+  });
+}
+
 function handleSync(raw: unknown): void {
-  const p = z.object({ activeRides: z.array(rideSnapshotSchema), serverTime: z.string().optional() }).safeParse(raw);
+  const p = standSessionSyncSchema.safeParse(raw);
   if (!p.success) return;
   gotSyncSinceConnect = true;
   clearTimeout(syncWaitTimer);
   const st = useStore.getState();
-  const offset = p.data.serverTime ? computeClockOffset(p.data.serverTime, Date.now()) : st.clockOffset;
+  const offset = computeClockOffset(p.data.serverTime, Date.now());
   if (offset !== st.clockOffset) st.set({ clockOffset: offset });
   let closed = 0;
   updateRides((prev) => {
@@ -177,7 +197,7 @@ function bind(s: Socket): void {
     useStore.getState().set({ conn: 'disconnected' });
     if (reason === 'io server disconnect') {
       // Sunucu kesti (askıya alma, token süresi...): önce oturumu doğrula, sonra yeniden bağlan.
-      void refreshAccess().then((o) => o === 'ok' && socket?.connect());
+      refreshThenConnect();
     }
   });
 
@@ -189,17 +209,16 @@ function bind(s: Socket): void {
     // Ara katman reddi (UNAUTHORIZED vb.) otomatik yeniden bağlanmayı durdurur: elle devam edilir.
     if (!s.active) {
       const attempt = ++reconnectAttempt;
-      const run = async () => {
-        if (code === 'UNAUTHORIZED' && (await refreshAccess()) !== 'ok') return;
-        if (socket === s) s.connect();
-      };
       clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(() => void run(), backoffMs(attempt));
+      reconnectTimer = setTimeout(() => {
+        if (code === 'UNAUTHORIZED') refreshThenConnect(attempt);
+        else if (socket === s) s.connect();
+      }, backoffMs(attempt));
     }
   });
 
   s.on(COMMON_EVENTS.authExpired, () => {
-    void refreshAccess(); // başarılı olunca onToken dinleyicisi `auth_refresh` gönderir
+    refreshThenConnect(); // başarılı olunca onToken dinleyicisi `auth_refresh` gönderir; 'network' yeniden denenir
   });
 
   s.on(COMMON_EVENTS.sessionSync, handleSync);
@@ -302,7 +321,8 @@ export function initRealtime(): void {
   onToken((token) => {
     // Access yenilendi: bağlantıyı koparmadan `auth_refresh` (auth_expired'a da yanıt).
     const s = socket;
-    if (!s || !s.connected) return;
+    if (!s) return;
+    if (!s.connected) return void s.connect(); // yeni token'la (auth callback güncel token'ı okur) yeniden bağlan
     s.timeout(ACK_TIMEOUT_MS).emit(COMMON_EVENTS.authRefresh, { token }, (err: Error | null, res?: Ack) => {
       if (err || !res) return;
       if (!res.ok) handleAuthCode(isErrorCode(res.error?.code) ? res.error.code : 'INTERNAL');

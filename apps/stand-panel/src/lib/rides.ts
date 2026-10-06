@@ -3,6 +3,7 @@
 // DEĞİŞTİRİR (birleştirmez); (3) terminal ride için hiçbir event uygulanmaz.
 // Tüm zamanlar `nowMs`: sunucu saatine göre düzeltilmiş epoch ms (bkz. clock.ts).
 import {
+  DRIVER_SUSPENDED_REASON,
   TERMINAL_RIDE_STATUSES,
   type LatLng,
   type RideCancelledEvent,
@@ -21,8 +22,6 @@ export const ARCHIVE_MAX = 10;
 /** Yeni oluşturulan ride'ın `session_sync` ile silinmemesi için tanınan süre (ack/sync yarışı). */
 export const CREATE_GRACE_MS = 3_000;
 export const FLASH_MS = 3_000;
-
-export const DRIVER_SUSPENDED_REASON = 'driver_suspended';
 
 export type DriverInfo = { id: string; name: string; plate: string; vehicle?: string; phone: string };
 

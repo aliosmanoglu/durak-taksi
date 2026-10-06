@@ -391,7 +391,6 @@ describe('REDDET + GERİ AL (Q3)', () => {
     expect(rid(r.patch.requests!)).toEqual([A]);
     expect(r.effects).toEqual([{ type: 'toast', text: T.ride.req.declineFailed }]);
     expect(onDeclineAck(s, request, { ok: false, code: 'NOT_A_CANDIDATE' }, NOW)).toEqual({ patch: {}, effects: [] });
-    expect(onDeclineAck(s, request, { ok: false, timeout: true }, NOW)).toEqual({ patch: {}, effects: [] });
     expect(onDeclineAck(s, request, { ok: true }, NOW)).toEqual({ patch: {}, effects: [] });
   });
 });
@@ -643,7 +642,36 @@ describe('clearRequests', () => {
     const s = ctx({ requests: [req(A, 1)], focusedId: A, pendingDecline: { request: req(B, 2), sendAt: NOW } });
     const r = clearRequests(s);
     expect(r.patch).toMatchObject({ requests: [], focusedId: null, pendingDecline: null, accepting: null });
-    expect(types(r.effects)).toEqual(['cancelDeclineFlush', 'stopRing']);
+    expect(types(r.effects)).toEqual(['cancelDeclineFlush', 'emitDecline', 'stopRing']);
+    expect(r.effects[1]).toMatchObject({ rideId: B });
     expect(clearRequests(ctx())).toEqual({ patch: {}, effects: [] });
+  });
+});
+
+describe('denetim düzeltmeleri (3, 6, 7)', () => {
+  const sync = (p: Partial<Parameters<typeof applyRideSync>[1]> = {}) => ({ openRequests: [], ...p });
+
+  it('3: kabul ack ı daha yeni sürüm görüldüyse yolculuk benimsenmez, sync istenir', () => {
+    const s = ctx({ accepting: { rideId: A, timedOut: false }, rideVersions: { [A]: 5 } });
+    const r = onAcceptAck(s, A, { kind: 'ok', ride: snap(A, { version: 3 }) }, NOW);
+    expect(r.patch).toEqual({ accepting: null });
+    expect(types(r.effects)).toEqual(['requestSync']);
+  });
+
+  it('6: kapanmış çağrı için bekleyen ret sync ile temizlenir', () => {
+    const s = ctx({ pendingDecline: { request: req(A, 1), sendAt: NOW } });
+    const r = applyRideSync(s, sync({ openRequests: [req(B, 2)] }), NOW);
+    expect(r.patch.pendingDecline).toBeNull();
+    expect(types(r.effects)).toContain('cancelDeclineFlush');
+    const still = applyRideSync(s, sync({ openRequests: [req(A, 1)] }), NOW);
+    expect(still.patch).not.toHaveProperty('pendingDecline');
+  });
+
+  it('7: ret ack zaman aşımında çağrı geri konur; pasifken konmaz', () => {
+    const request = req(A, 500);
+    const r = onDeclineAck(ctx(), request, { ok: false, timeout: true }, NOW);
+    expect(rid(r.patch.requests!)).toEqual([A]);
+    expect(onDeclineAck(ctx({ server: 'offline' }), request, { ok: false, timeout: true }, NOW)).toEqual({ patch: {}, effects: [] });
+    expect(onDeclineAck(ctx({ server: 'busy' }), request, { ok: false, code: 'INTERNAL' }, NOW)).toEqual({ patch: {}, effects: [] });
   });
 });
