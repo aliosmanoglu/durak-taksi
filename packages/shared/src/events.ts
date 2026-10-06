@@ -27,6 +27,8 @@ export const DRIVER_EVENTS = {
 } as const;
 
 export const STAND_EVENTS = {
+  /** C → S `{}`; ack `Ack<StandSessionSync>` (şoför tarafındakinin eşi). */
+  sessionSyncRequest: 'session_sync_request',
   rideCreate: 'ride_create',
   rideSearching: 'ride_searching',
   rideMatched: 'ride_matched',

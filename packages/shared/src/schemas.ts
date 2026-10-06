@@ -69,6 +69,8 @@ export const rideRequestSchema = z.object({
   distanceM: z.number().nonnegative(),
   createdAt: isoDateSchema,
   version: versionSchema,
+  /** Sunucu saati (ISO-8601 `Z`) — üretildiği an; istemci `createdAt` ile cihaz saati farkını giderir. */
+  serverNow: isoDateSchema,
 });
 export type RideRequest = z.infer<typeof rideRequestSchema>;
 

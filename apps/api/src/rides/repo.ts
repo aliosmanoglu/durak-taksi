@@ -94,5 +94,6 @@ export function toRequest(row: RideRow, distanceM: number): RideRequest {
     ...(row.notes ? { notes: row.notes } : {}),
     standName: row.standName, distanceM: Math.round(distanceM),
     createdAt: row.createdAt.toISOString(), version: row.version,
+    serverNow: new Date().toISOString(),
   };
 }

@@ -23,6 +23,9 @@ export default defineConfig({
           hookTimeout: 180_000,
           // argon2 (19 MiB, t=2) test başına birkaç hash/verify yapar.
           testTimeout: 30_000,
+          // Uzlaştırıcı (ride-reconcile) paylaşılan Redis'in tamamını tarar; dosyalar paralel koşarsa başka dosyanın
+          // bilerek bozulmuş state'ini onarıp testleri kırar (presence-sync, ride-session). Bu yüzden seri.
+          fileParallelism: false,
         },
       },
     ],

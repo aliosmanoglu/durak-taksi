@@ -249,6 +249,7 @@ async function driverSessionSync(state: PresenceState, rides: RideService | null
     presenceVersion: state.presenceVersion,
     ...(extra.activeRide ? { activeRide: extra.activeRide } : {}),
     openRequests: extra.openRequests,
+    serverTime: new Date().toISOString(),
   };
 }
 
@@ -342,9 +343,31 @@ function registerDriverRideHandlers(
   });
 }
 
-/** Durak ride event'leri: çağrı aç, iptal, tamamla. */
+/**
+ * Durak `session_sync` gövdesi: açık ride'lar + sunucu saati. Eşleşmiş ride'ların odasına (yeniden) katılır
+ * (konum yayını `ride:{id}` odasından gelir).
+ */
+async function standSessionSync(socket: Socket, rides: RideService | null): Promise<StandSessionSync> {
+  const activeRides = rides ? await rides.standSync(dataOf(socket).auth.sub) : [];
+  for (const r of activeRides) if (r.status === 'matched') await socket.join(rooms.ride(r.rideId));
+  return { activeRides, serverTime: new Date().toISOString() };
+}
+
+/** Durak ride event'leri: çağrı aç, iptal, tamamla, oturum durumu iste. */
 function registerStandHandlers(socket: Socket, rides: RideService, ready: Promise<boolean>, log: Logger) {
   const standId = () => dataOf(socket).auth.sub;
+
+  // Bağlıyken güncel durumu isteme (şoför tarafının eşi); gövde zorunlu `{}`.
+  socket.on(STAND_EVENTS.sessionSyncRequest, async (payload: unknown, ack?: unknown) => {
+    const reply = replyOf<StandSessionSync>(ack);
+    if (!(await ready)) return;
+    if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
+    try {
+      reply({ ok: true, data: await standSessionSync(socket, rides) });
+    } catch (err) {
+      reply(toAckError(err, log));
+    }
+  });
 
   socket.on(STAND_EVENTS.rideCreate, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideCreateResult>(ack);
@@ -424,10 +447,7 @@ function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: L
         if (sync.activeRide) await socket.join(rooms.ride(sync.activeRide.rideId));
         socket.emit(COMMON_EVENTS.sessionSync, sync);
       } else {
-        const activeRides = opts.rides ? await opts.rides.standSync(claims.sub) : [];
-        for (const r of activeRides) if (r.status === 'matched') await socket.join(rooms.ride(r.rideId));
-        const sync: StandSessionSync = { activeRides };
-        socket.emit(COMMON_EVENTS.sessionSync, sync);
+        socket.emit(COMMON_EVENTS.sessionSync, await standSessionSync(socket, opts.rides));
       }
     } catch (err) {
       // session_sync gelmezse istemci durumunu bilemeden bekler; bağlantıyı kes, istemci yeniden bağlansın.

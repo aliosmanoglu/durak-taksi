@@ -267,6 +267,48 @@ describe('9. session_sync restorasyonu', () => {
     expect(panel.sync.activeRides).toEqual([]);
   }, 40_000);
 
+  it('E-5: durak session_sync_request {} → ack activeRides + serverTime; gövdesiz/geçersiz gövde VALIDATION_ERROR; başka durağınkini görmez', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const a = await s.stand(city);
+    const b = await s.stand(north(city, 40));
+    expect((await emitAck<StandSessionSync>(a.socket, STAND_EVENTS.sessionSyncRequest, {})).ok).toBe(true);
+    const { rideId } = await s.createRide(a);
+    const res = await emitAck<StandSessionSync>(a.socket, STAND_EVENTS.sessionSyncRequest, {});
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.data?.activeRides.map((r) => r.rideId)).toEqual([rideId]);
+    expect(Number.isNaN(Date.parse(res.ok ? res.data!.serverTime : ''))).toBe(false);
+    const other = await emitAck<StandSessionSync>(b.socket, STAND_EVENTS.sessionSyncRequest, {});
+    expect(other.ok && other.data?.activeRides).toEqual([]);
+    const bad = await emitAck(a.socket, STAND_EVENTS.sessionSyncRequest, 'x' as unknown as object);
+    expect(bad.ok).toBe(false);
+    expect(!bad.ok && bad.error.code).toBe('VALIDATION_ERROR');
+  }, 30_000);
+
+  it('E-6: session_sync (bağlanma + ack, şoför ve durak) serverTime taşır; RideRequest.serverNow sunucu saatine yakındır', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const stand = await s.stand(city);
+    const d = await s.driver(north(city, 200));
+    const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+    const before = Date.now();
+    expect(stand.sync.serverTime).toMatch(iso);
+    expect(d.sync.serverTime).toMatch(iso);
+    expect(Math.abs(Date.parse(d.sync.serverTime) - before)).toBeLessThan(30_000);
+
+    const { rideId } = await s.createRide(stand);
+    const [live] = await d.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(rideId));
+    expect(rideRequestSchema.parse(live).serverNow).toMatch(iso);
+    expect(Math.abs(Date.parse(live.serverNow) - Date.now())).toBeLessThan(30_000);
+    expect(Date.parse(live.serverNow)).toBeGreaterThanOrEqual(Date.parse(live.createdAt));
+
+    const ack = await emitAck<DriverSessionSync>(d.socket, DRIVER_EVENTS.sessionSyncRequest, {});
+    expect(ack.ok && ack.data?.serverTime).toMatch(iso);
+    const open = ack.ok ? ack.data!.openRequests : [];
+    expect(open).toHaveLength(1);
+    expect(rideRequestSchema.parse(open[0]).serverNow).toMatch(iso);
+  }, 30_000);
+
   it('panel yenileme: yalnızca kendi durağının çağrıları gelir', async () => {
     s = new Scope(t);
     const city = uniqueCity();

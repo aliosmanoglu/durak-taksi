@@ -473,6 +473,7 @@ type RideRequest = {             // şoföre gösterilen açık çağrı
   dropoffAddress?: string; notes?: string;
   standName: string; distanceM: number;
   createdAt: string; version: number;   // süre sınırı yok; ride_taken gelene kadar açık
+  serverNow: string;                    // sunucu saati (ISO-8601 Z); istemci cihaz saati farkını bununla giderir
 };
 
 type RideSnapshot = {
@@ -490,7 +491,7 @@ type RideSnapshot = {
 |---|---|---|---|
 | `auth_refresh` | C → S | `{ token }` | Bağlantıyı koparmadan access token yenileme |
 | `auth_expired` | S → C | `{}` | Access token süresi doldu; istemci 30 sn içinde REST ile refresh edip yeni access token'ı `auth_refresh` ile göndermezse bağlantı kesilir |
-| `session_sync` | S → C | Şoför: `{ driverStatus, offlineReason?, presenceVersion, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir. Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü). `offlineReason` (`user` \| `stale_heartbeat` \| `forced` \| `not_online`) yalnızca offline iken bulunur. `presenceVersion` her durum geçişinde kesin artar (Redis `TIME` tabanlı); istemci aynı bağlantıda daha küçük sürümlüyü yok sayar |
+| `session_sync` | S → C | Şoför: `{ driverStatus, offlineReason?, presenceVersion, activeRide?: RideSnapshot, openRequests: RideRequest[], serverTime }` · Durak: `{ activeRides: RideSnapshot[], serverTime }` | Her (yeniden) bağlanmada ve `session_sync_request` ack'inde (`/driver` ve `/stand`); istemci state'ini bununla düzeltir. `serverTime` sunucu saatidir (ISO-8601 `Z`): istemci `serverTime - cihazSaati` farkını hesaplayıp geçen süreyi buna göre gösterir (`RideRequest.serverNow` aynı amaçla).  Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü). `offlineReason` (`user` \| `stale_heartbeat` \| `forced` \| `not_online`) yalnızca offline iken bulunur. `presenceVersion` her durum geçişinde kesin artar (Redis `TIME` tabanlı); istemci aynı bağlantıda daha küçük sürümlüyü yok sayar |
 
 ### Şoför (`/driver`)
 | Event | Yön | Payload |
@@ -521,6 +522,7 @@ type RideSnapshot = {
 | `ride_completed` | S → C | `{ rideId, completedAt, version }` — şoför veya durak tamamlamasında durağa gider |
 | `ride_cancel` | C → S | `{ rideId, reason?, version }` |
 | `ride_cancelled` | S → C | `{ rideId, reason?, version }` — iptalin onayı (aynı durağın diğer tabletleri için) |
+| `session_sync_request` | C → S | `{}` (gövde zorunlu) → ack `{ ok, data: { activeRides: RideSnapshot[], serverTime } }` — bağlıyken güncel durumu istemek için (şoför tarafının eşi) |
 | `stand_nearby_drivers` | S → C | `{ drivers: { id, location: LatLng }[] }` — 10 sn'de bir, `max_radius_m` içindeki `available` şoförler |
 
 ### Ride Odası (`ride:{rideId}`)

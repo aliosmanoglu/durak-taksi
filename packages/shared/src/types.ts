@@ -69,6 +69,8 @@ export type DriverSessionSync = {
   activeRide?: RideSnapshot;
   /** Şoföre gösterilen, hâlâ `searching` olan çağrılar (`dn:driver:{id}:requests`). */
   openRequests: RideRequest[];
+  /** Sunucu saati (ISO-8601 `Z`); istemci cihaz saati farkını bununla hesaplar. */
+  serverTime: string;
 };
-/** Durağın açık (`searching` / `matched`) ride'ları. */
-export type StandSessionSync = { activeRides: RideSnapshot[] };
+/** Durağın açık (`searching` / `matched`) ride'ları. `session_sync` ve `/stand` `session_sync_request` ack'i. */
+export type StandSessionSync = { activeRides: RideSnapshot[]; serverTime: string };

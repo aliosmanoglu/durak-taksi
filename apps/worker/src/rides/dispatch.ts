@@ -243,6 +243,7 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
       ...(ride.notes ? { notes: ride.notes } : {}),
       standName: ride.stand_name, distanceM: Math.round(distOf.get(id) ?? 0),
       createdAt: new Date(ride.created_at).toISOString(), version: ride.version,
+      serverNow: new Date().toISOString(),
     };
     emitter.toDriver(id, DRIVER_EVENTS.rideRequested, req);
   }

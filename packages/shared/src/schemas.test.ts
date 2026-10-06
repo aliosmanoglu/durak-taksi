@@ -59,9 +59,10 @@ describe('ride payload şemaları', () => {
   it('RideRequest / RideSnapshot geçerli gövdeyi kabul eder, eksik/yanlış alanı reddeder', () => {
     const req = {
       rideId: id, shortCode: 'AB12CD', pickup: pt, pickupAddress: 'x',
-      standName: 'D', distanceM: 120, createdAt: now, version: 1,
+      standName: 'D', distanceM: 120, createdAt: now, version: 1, serverNow: now,
     };
     expect(rideRequestSchema.safeParse(req).success).toBe(true);
+    expect(rideRequestSchema.safeParse({ ...req, serverNow: undefined }).success).toBe(false);
     expect(rideRequestSchema.safeParse({ ...req, version: undefined }).success).toBe(false);
     const snap = {
       rideId: id, shortCode: 'AB12CD', status: 'matched', version: 2,
