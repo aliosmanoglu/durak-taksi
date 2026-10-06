@@ -28,7 +28,7 @@ import {
   type StandSessionSync,
 } from '@duraknet/shared';
 import { AppError } from './http/errors';
-import { assertActiveSession, type AuthDeps } from './auth/service';
+import { assertActiveSession, getAccountState, type AuthDeps } from './auth/service';
 import { verifyToken, type VerifiedClaims } from './auth/tokens';
 import type { LocationOutcome, PresenceService, PresenceState } from './presence/service';
 import type { DriverRideSync, RideService } from './rides/service';
@@ -284,10 +284,14 @@ function registerDriverRideHandlers(
     }
     // Askıya alma yarışı: kontrol ile kabul arasında hesap askıya alındıysa eşleşme geri verilir
     // (askıya alma yolu releaseDriverForSuspension çağırmış olabilir; işlem idempotenttir) ve şoför offline olur.
+    // YALNIZCA hesap gerçekten askıdaysa: askıya alma da logout da token_version'ı artırır, bu yüzden hata kodu
+    // (UNAUTHORIZED) ikisini ayırt etmez; hesap durumu okunur. Logout (token_version uyuşmazlığı, hesap `approved`)
+    // karar (a)'yı bozmaz: eşleşmiş ride iptal edilmez, `matched` kalır ve şoför yeniden girince devam eder.
     try {
       await assertActiveSession(deps, claims());
     } catch (err) {
-      if (err instanceof AppError) {
+      const state = err instanceof AppError ? await getAccountState(deps, 'driver', id).catch(() => null) : null;
+      if (err instanceof AppError && state?.status === 'suspended') {
         await rides.releaseDriverForSuspension(id).catch((e: unknown) =>
           log.error({ err: e instanceof Error ? e.message : String(e) }, 'askıdaki şoförün çağrısı bırakılamadı'),
         );

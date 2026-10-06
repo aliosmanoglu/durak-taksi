@@ -40,40 +40,51 @@ return {1, v, pv}
 `;
 
 // PG koşullu UPDATE 0 satır döndürünce (veya hata verince) Redis'i geri alır. Şoför, ride'ın durumundan bağımsız
-// serbest bırakılır (araya giren durak iptali ride'ı zaten `cancelled` yapmış olabilir); ride hash'i yalnızca hâlâ
-// bu şoföre `matched` ise `searching`'e döndürülür.
+// serbest bırakılır. Ride hash'i yalnızca hâlâ bu şoföre `matched` ise ve PG'nin güncel durumuna göre düzeltilir:
+//   PG `searching`            → hash `searching` (PG sürümüyle)
+//   PG `cancelled`/`completed` → hash terminal (araya giren durak iptali/tamamlama; ride yeniden AÇILMAZ) + TTL
+//   diğer / bilinmiyor ('')   → ride hash'ine dokunulmaz (uzlaştırıcı düzeltir)
 // KEYS: 1=ride 2=driver 3=geo 4=heartbeat 5=driver pv
-// ARGV: 1=driverId 2=rideId 3=önceki sürüm 4=driverHashTtlS
+// ARGV: 1=driverId 2=rideId 3=PG durumu ('' bilinmiyor) 4=PG sürümü 5=driverHashTtlS 6=terminalTtlS
 export const ACCEPT_ROLLBACK = `${PRESENCE_VERSION_LUA}${RELEASE_DRIVER_LUA}
 if redis.call('HGET', KEYS[1], '${R.status}') == 'matched' and redis.call('HGET', KEYS[1], '${R.driverId}') == ARGV[1] then
-  redis.call('HSET', KEYS[1], '${R.status}', 'searching', '${R.version}', ARGV[3])
-  redis.call('HDEL', KEYS[1], '${R.driverId}')
+  if ARGV[3] == 'searching' then
+    redis.call('HSET', KEYS[1], '${R.status}', 'searching', '${R.version}', ARGV[4])
+    redis.call('HDEL', KEYS[1], '${R.driverId}')
+  elseif ARGV[3] == 'cancelled' or ARGV[3] == 'completed' then
+    redis.call('HSET', KEYS[1], '${R.status}', ARGV[3], '${R.version}', ARGV[4])
+    redis.call('HDEL', KEYS[1], '${R.driverId}')
+    redis.call('EXPIRE', KEYS[1], ARGV[6])
+  end
 end
-releaseDriver(KEYS[2], KEYS[3], KEYS[4], KEYS[5], ARGV[1], ARGV[2], ARGV[4])
+releaseDriver(KEYS[2], KEYS[3], KEYS[4], KEYS[5], ARGV[1], ARGV[2], ARGV[5])
 return 1
 `;
 
-// PG geçişi commit olduktan sonra Redis önbelleğini ona uydurur (PG kazanır). İdempotenttir; önbellekteki sürüm
-// yeni sürümden küçük değilse (aynı geçişin tekrarı / sıra dışı ulaşma) hiçbir şey yapmaz.
+// PG geçişi commit olduktan sonra Redis önbelleğini ona uydurur (PG kazanır). İdempotenttir.
+// `searching`/`matched` hedefinde önbellekteki sürüm yeni sürümden küçük değilse (aynı geçişin tekrarı / sıra dışı
+// ulaşma) atlanır. TERMİNAL (`completed`/`cancelled`) geçiş sürümden bağımsız uygulanır: kabul Lua'sı Redis
+// sürümünü PG'den önce ilerletmiş olabilir ve terminal durum asla atlanmamalıdır. Terminal TTL her durumda konur.
 // KEYS: 1=ride 2=candidates 3=excluded 4=stand active_rides 5=driver 6=geo 7=heartbeat 8=driver pv
 // ARGV: 1=rideId 2=yeniDurum 3=yeniSürüm 4=serbestBırakılacakŞoför('' yok) 5=şoförüExcludedYap('1'|'0')
 //       6=terminalTtlS 7=driverHashTtlS
 // Döner: önceki adaylar (yalnızca `searching`'e dönüş veya terminal geçişte; çağıran `ride_taken`/requests temizliği için).
 export const MIRROR = `${PRESENCE_VERSION_LUA}${RELEASE_DRIVER_LUA}
+local terminal = (ARGV[2] == 'completed' or ARGV[2] == 'cancelled')
 local cur = tonumber(redis.call('HGET', KEYS[1], '${R.version}'))
-if cur and cur >= tonumber(ARGV[3]) then return {} end
+if (not terminal) and cur and cur >= tonumber(ARGV[3]) then return {} end
 local cands = redis.call('SMEMBERS', KEYS[2])
 redis.call('HSET', KEYS[1], '${R.status}', ARGV[2], '${R.version}', ARGV[3])
-if ARGV[2] == 'searching' then
-  redis.call('HDEL', KEYS[1], '${R.driverId}')
-  redis.call('HSET', KEYS[1], '${R.wave}', 0)
-  redis.call('DEL', KEYS[2])
-  if ARGV[5] == '1' and ARGV[4] ~= '' then redis.call('SADD', KEYS[3], ARGV[4]) end
-else
+if terminal then
   redis.call('SREM', KEYS[4], ARGV[1])
   redis.call('EXPIRE', KEYS[1], ARGV[6])
   redis.call('EXPIRE', KEYS[2], ARGV[6])
   redis.call('EXPIRE', KEYS[3], ARGV[6])
+else
+  redis.call('HDEL', KEYS[1], '${R.driverId}')
+  redis.call('HSET', KEYS[1], '${R.wave}', 0)
+  redis.call('DEL', KEYS[2])
+  if ARGV[5] == '1' and ARGV[4] ~= '' then redis.call('SADD', KEYS[3], ARGV[4]) end
 end
 releaseDriver(KEYS[5], KEYS[6], KEYS[7], KEYS[8], ARGV[4], ARGV[1], ARGV[7])
 return cands

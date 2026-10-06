@@ -21,6 +21,7 @@ import { ACCEPT, ACCEPT_ROLLBACK, DECLINE, MIRROR } from './scripts';
 import type { DispatchScheduler } from './scheduler';
 import type { RideEventSink } from './sink';
 import { RideStateMachine, type TransitionResult } from './state-machine';
+import { retry } from '../util/retry';
 
 export type RideCreateInput = {
   pickup: LatLng;
@@ -102,23 +103,41 @@ export function createRideService(opts: RideServiceOptions): RideService {
     );
   };
 
-  /** PG'deki geçişi Redis önbelleğine yansıtır; başarısızlık PG'yi geri almaz (PG kazanır), loglanır. */
+  /**
+   * PG'deki geçişi Redis önbelleğine yansıtır. Sınırlı yeniden denenir (Lua idempotenttir); yine de başarısız olursa
+   * PG geri alınmaz (PG kazanır), hata loglanır ve worker uzlaştırıcısı önbelleği düzeltir.
+   */
   async function mirror(
     tr: TransitionResult,
     opt: { releaseDriverId: string | null; excludeDriver: boolean },
   ): Promise<string[]> {
     const driverId = opt.releaseDriverId ?? '';
     try {
-      return (await mirrorLua(
-        redisKeys.ride(tr.rideId), redisKeys.rideCandidates(tr.rideId), redisKeys.rideExcluded(tr.rideId),
-        redisKeys.standActiveRides(tr.standId),
-        redisKeys.driver(driverId || '_'), redisKeys.geoAvailable, redisKeys.heartbeat,
-        redisKeys.driverPresenceVersion(driverId || '_'),
-        tr.rideId, tr.to, tr.version, driverId, opt.excludeDriver ? '1' : '0', terminalTtl, driverTtl,
-      )) as string[];
+      return await retry(
+        async () =>
+          (await mirrorLua(
+            redisKeys.ride(tr.rideId), redisKeys.rideCandidates(tr.rideId), redisKeys.rideExcluded(tr.rideId),
+            redisKeys.standActiveRides(tr.standId),
+            redisKeys.driver(driverId || '_'), redisKeys.geoAvailable, redisKeys.heartbeat,
+            redisKeys.driverPresenceVersion(driverId || '_'),
+            tr.rideId, tr.to, tr.version, driverId, opt.excludeDriver ? '1' : '0', terminalTtl, driverTtl,
+          )) as string[],
+      );
     } catch (err) {
       log.error({ err: errMsg(err), rideId: tr.rideId, to: tr.to }, 'ride önbelleği güncellenemedi');
       return [];
+    }
+  }
+
+  /**
+   * Dispatch'i başlatır (scheduler kısa yeniden deneme yapar). PG'de ride zaten `searching` olduğundan hata isteği
+   * düşürmez: job'sız kalan ride'ı worker uzlaştırıcısı yeniden kurar. Loglanır (ham veri yok).
+   */
+  async function startSearchSafe(rideId: string, searchVersion: number) {
+    try {
+      await retry(() => scheduler.startSearch(rideId, searchVersion), { attempts: 3, baseDelayMs: 100 });
+    } catch (err) {
+      log.error({ err: errMsg(err), rideId }, 'dispatch başlatılamadı; uzlaştırıcı yeniden kuracak');
     }
   }
 
@@ -161,9 +180,9 @@ export function createRideService(opts: RideServiceOptions): RideService {
       version: tr.version,
     };
     sink.toStand(tr.standId, STAND_EVENTS.rideDriverCancelled, ev);
-    // Şoför iptali kaydı: ayrı tablo yok, olay loglanır (ham konum/telefon yok).
-    log.info({ rideId: tr.rideId, driverId, reason: reason ?? null }, 'eşleşme şoför tarafından bırakıldı; yeniden aranıyor');
-    await scheduler.startSearch(tr.rideId, tr.version);
+    // Şoför iptali kaydı: ayrı tablo yok, olay loglanır. Serbest metin `reason` loglanmaz (gizlilik): yalnızca var/yok.
+    log.info({ rideId: tr.rideId, driverId, hasReason: Boolean(reason) }, 'eşleşme şoför tarafından bırakıldı; yeniden aranıyor');
+    await startSearchSafe(tr.rideId, tr.version);
   }
 
   return {
@@ -211,7 +230,7 @@ export function createRideService(opts: RideServiceOptions): RideService {
         log.error({ err: errMsg(err), rideId }, 'ride önbelleği yazılamadı');
       }
       publish(rideId, 'created', 'searching', tr.version);
-      await scheduler.startSearch(rideId, tr.version);
+      await startSearchSafe(rideId, tr.version);
       return { rideId, shortCode: inserted.short_code };
     },
 
@@ -235,11 +254,19 @@ export function createRideService(opts: RideServiceOptions): RideService {
           rideId, reason: 'driver_accepted', actor: 'driver', driverId, expectedVersion: newVersion - 1,
         });
       } catch (err) {
-        // PG 0 satır (veya hata): Redis'i geri al (compensating action).
-        await rollbackLua(
-          redisKeys.ride(rideId), redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat,
-          redisKeys.driverPresenceVersion(driverId), driverId, rideId, newVersion - 1, driverTtl,
-        ).catch((e: unknown) => log.error({ err: errMsg(e), rideId }, 'kabul geri alınamadı'));
+        // PG 0 satır (veya hata): Redis'i geri al (compensating action). Ride hash'i PG'nin güncel durumuna göre
+        // düzeltilir: araya giren durak iptali/tamamlaması ride'ı terminal yapmışsa yeniden `searching` yapılmaz.
+        // Bu okuma yalnızca telafi içindir; karar Lua'dadır. Okunamazsa ride hash'ine dokunulmaz (uzlaştırıcı düzeltir).
+        const pg = await db
+          .selectFrom('rides').select(['status', 'version']).where('id', '=', rideId).executeTakeFirst()
+          .catch(() => undefined);
+        await retry(() =>
+          rollbackLua(
+            redisKeys.ride(rideId), redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat,
+            redisKeys.driverPresenceVersion(driverId), driverId, rideId, pg?.status ?? '', pg?.version ?? 0,
+            driverTtl, terminalTtl,
+          ),
+        ).catch((e: unknown) => log.error({ err: errMsg(e), rideId }, 'kabul geri alınamadı; uzlaştırıcı düzeltecek'));
         if (err instanceof AppError && err.code !== 'DRIVER_NOT_AVAILABLE') throw notAvailable();
         throw err;
       }

@@ -22,6 +22,14 @@ export type DispatchTiming = {
   nearbyEveryMs: number;
   /** Adayın konumu bundan eskiyse bildirilmez. */
   locationFreshMs: number;
+  /** İlk `ride_still_open` gecikmesi (yalnızca uzlaştırıcı yeniden kurarken kullanılır; varsayılan `REMINDER.FIRST_SEC`). */
+  reminderFirstMs?: number;
+  /** Uzlaştırıcı tarama aralığı; verilmezse uzlaştırıcı kurulmaz (testler). */
+  reconcileEveryMs?: number;
+  /** `searching` ride'ı bu süreden yeniyse job'sız sayılmaz (API'nin startSearch'i sürüyor olabilir). Varsayılan 30 sn. */
+  reconcileMinAgeMs?: number;
+  /** `created` ride'ı bu süreden eskiyse yetim sayılıp `searching`'e alınır. Varsayılan 60 sn. */
+  reconcileOrphanAgeMs?: number;
 };
 
 export const DEFAULT_TIMING: DispatchTiming = {
@@ -57,7 +65,7 @@ export function radiusForWave(wave: number, initialM: number, maxM: number): num
 
 // Önbellek yoksa (TTL, kayıp, API'nin yazamaması) PG'ye göre yeniden kurar; varsa dokunmaz.
 // KEYS: 1=ride 2=stand active_rides  ARGV: 1=rideId 2=version 3=standId 4=lat 5=lng
-const ENSURE_CACHE = `
+export const ENSURE_CACHE = `
 if redis.call('HGET', KEYS[1], '${RIDE_HASH.status}') then return 0 end
 redis.call('HSET', KEYS[1], '${RIDE_HASH.status}', 'searching', '${RIDE_HASH.version}', ARGV[2],
   '${RIDE_HASH.standId}', ARGV[3], '${RIDE_HASH.pickupLat}', ARGV[4], '${RIDE_HASH.pickupLng}', ARGV[5],
@@ -122,6 +130,57 @@ async function loadDispatchRow(pool: Pool, rideId: string): Promise<DispatchRow 
 export type DispatchOutcome =
   | { skipped: true }
   | { skipped: false; wave: number; radiusM: number; newCandidates: number; notifiedCount: number };
+
+/** Dalga job'ını (deterministik id: tekrar `add` yok sayılır) ekler ve id'yi ride hash'ine not eder. */
+export async function addDispatchJob(deps: RideJobDeps, data: DispatchJobData, delayMs: number): Promise<void> {
+  const id = jobIds.dispatch(data.rideId, roundJobNumber(data.searchVersion, data.wave));
+  await deps.dispatchQueue.add('wave', data, { ...JOB_OPTS, delay: delayMs, jobId: id });
+  await deps.redis.eval(NOTE_JOB, 1, redisKeys.ride(data.rideId), RIDE_HASH.dispatchJob, id);
+}
+
+/** Hatırlatma job'ının karşılığı. */
+export async function addReminderJob(deps: RideJobDeps, data: ReminderJobData, delayMs: number): Promise<void> {
+  const id = jobIds.reminder(data.rideId, roundJobNumber(data.searchVersion, data.n));
+  await deps.reminderQueue.add('remind', data, { ...JOB_OPTS, delay: delayMs, jobId: id });
+  await deps.redis.eval(NOTE_JOB, 1, redisKeys.ride(data.rideId), RIDE_HASH.reminderJob, id);
+}
+
+/** Sonraki dalga/tarama: deterministik job id (tekrar çalıştırmaya karşı idempotent). */
+async function enqueueNextWave(deps: RideJobDeps, data: DispatchJobData): Promise<void> {
+  const delay = deps.timing.waveDelaysMs[data.wave - 1] ?? deps.timing.continuousScanMs;
+  await addDispatchJob(deps, { ...data, wave: data.wave + 1 }, delay);
+}
+
+/**
+ * Job tüm `attempts` hakkını tüketip başarısız olduysa zincir kopmasın: ride hâlâ aynı arama turunda `searching`
+ * ise sonraki dalga yine planlanır (arama süresiz sürer). Hata olursa yalnızca loglanır; uzlaştırıcı yeniden kurar.
+ */
+export async function continueDispatchChain(deps: RideJobDeps, data: DispatchJobData): Promise<void> {
+  try {
+    const r = await deps.pool.query<{ status: string; version: number }>('SELECT status, version FROM rides WHERE id = $1', [data.rideId]);
+    const ride = r.rows[0];
+    if (!ride || ride.status !== 'searching' || ride.version !== data.searchVersion) return;
+    await enqueueNextWave(deps, data);
+  } catch (err) {
+    deps.log.warn({ err: err instanceof Error ? err.message : String(err), rideId: data.rideId }, 'dispatch zinciri sürdürülemedi');
+  }
+}
+
+/** `continueDispatchChain`'in hatırlatma karşılığı. */
+export async function continueReminderChain(deps: RideJobDeps, data: ReminderJobData): Promise<void> {
+  try {
+    const r = await deps.pool.query<{ status: string; version: number }>('SELECT status, version FROM rides WHERE id = $1', [data.rideId]);
+    const ride = r.rows[0];
+    if (!ride || ride.status !== 'searching' || ride.version !== data.searchVersion) return;
+    await enqueueNextReminder(deps, data);
+  } catch (err) {
+    deps.log.warn({ err: err instanceof Error ? err.message : String(err), rideId: data.rideId }, 'hatırlatma zinciri sürdürülemedi');
+  }
+}
+
+async function enqueueNextReminder(deps: RideJobDeps, data: ReminderJobData): Promise<void> {
+  await addReminderJob(deps, { ...data, n: data.n + 1 }, deps.timing.reminderEveryMs);
+}
 
 /** Bir dalga / tarama. Sonuç testler için döner. */
 export async function processDispatch(deps: RideJobDeps, data: DispatchJobData): Promise<DispatchOutcome> {
@@ -206,11 +265,7 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
   };
   emitter.toStand(ride.stand_id, STAND_EVENTS.rideSearching, searching);
 
-  // Sonraki dalga/tarama: deterministik job id (tekrar çalıştırmaya karşı idempotent).
-  const delay = timing.waveDelaysMs[wave - 1] ?? timing.continuousScanMs;
-  const nextId = jobIds.dispatch(rideId, roundJobNumber(searchVersion, wave + 1));
-  await deps.dispatchQueue.add('wave', { rideId, searchVersion, wave: wave + 1 }, { ...JOB_OPTS, delay, jobId: nextId });
-  await redis.eval(NOTE_JOB, 1, redisKeys.ride(rideId), RIDE_HASH.dispatchJob, nextId);
+  await enqueueNextWave(deps, data);
 
   log.debug({ rideId, wave, radiusM, added: added.length }, 'dispatch dalgası tamamlandı');
   return { skipped: false, wave, radiusM, newCandidates: added.length, notifiedCount };
@@ -218,8 +273,8 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
 
 /** `ride_still_open`: yalnızca bildirim; çağrıyı iptal etmez, aramayı etkilemez. */
 export async function processReminder(deps: RideJobDeps, data: ReminderJobData): Promise<{ skipped: boolean }> {
-  const { pool, redis, emitter, timing } = deps;
-  const { rideId, searchVersion, n } = data;
+  const { pool, emitter } = deps;
+  const { rideId, searchVersion } = data;
   const r = await pool.query<{ status: string; version: number; stand_id: string; searching_at: Date | null; created_at: Date }>(
     'SELECT status, version, stand_id, searching_at, created_at FROM rides WHERE id = $1',
     [rideId],
@@ -236,11 +291,7 @@ export async function processReminder(deps: RideJobDeps, data: ReminderJobData):
   };
   emitter.toStand(ride.stand_id, STAND_EVENTS.rideStillOpen, ev);
 
-  const nextId = jobIds.reminder(rideId, roundJobNumber(searchVersion, n + 1));
-  await deps.reminderQueue.add('remind', { rideId, searchVersion, n: n + 1 }, {
-    ...JOB_OPTS, delay: timing.reminderEveryMs, jobId: nextId,
-  });
-  await redis.eval(NOTE_JOB, 1, redisKeys.ride(rideId), RIDE_HASH.reminderJob, nextId);
+  await enqueueNextReminder(deps, data);
   return { skipped: false };
 }
 

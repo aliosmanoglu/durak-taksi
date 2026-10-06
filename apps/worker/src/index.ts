@@ -64,6 +64,10 @@ async function start() {
       reminderEveryMs: config.REMINDER_EVERY_SEC * 1000,
       nearbyEveryMs: config.NEARBY_EVERY_S * 1000,
       locationFreshMs: config.LOCATION_FRESH_MS,
+      reminderFirstMs: config.REMINDER_FIRST_SEC * 1000,
+      reconcileEveryMs: config.RECONCILE_EVERY_S * 1000,
+      reconcileMinAgeMs: config.RECONCILE_MIN_AGE_S * 1000,
+      reconcileOrphanAgeMs: config.RECONCILE_ORPHAN_AGE_S * 1000,
     },
   });
   log.info(

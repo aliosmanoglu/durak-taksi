@@ -73,6 +73,14 @@ export class RideStateMachine {
     if (req.expectedVersion !== undefined) q = q.where('version', '=', req.expectedVersion);
     if (req.standId) q = q.where('stand_id', '=', req.standId);
     if (req.driverId && req.reason !== 'driver_accepted') q = q.where('driver_id', '=', req.driverId);
+    // Kabulde şoförün hesabı hâlâ `approved` olmalı: askıya alma ile kabul yarışında ride askıdaki şoförle `matched`
+    // kalmasın (aynı ifade içinde; commit sonrası kalan dar pencere accept() sonundaki kontrolle kapanır).
+    if (req.reason === 'driver_accepted' && req.driverId) {
+      const driverId = req.driverId;
+      q = q.where((eb) =>
+        eb.exists(eb.selectFrom('drivers').select('id').where('id', '=', driverId).where('status', '=', 'approved')),
+      );
+    }
 
     let row;
     try {

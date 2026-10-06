@@ -9,7 +9,7 @@ import { Redis } from 'ioredis';
 import pino from 'pino';
 import { createWorkerEmitter } from '../../../worker/src/rides/emitter';
 import { startRideWorkers, type RideWorkers } from '../../../worker/src/rides/workers';
-import { createDispatchScheduler } from '../../src/rides/scheduler';
+import { createDispatchScheduler, type DispatchScheduler } from '../../src/rides/scheduler';
 import { startTestApp, type StartTestAppOptions, type TestApp } from './app';
 import { inject } from 'vitest';
 
@@ -25,7 +25,18 @@ export type Timing = typeof FAST_TIMING;
 
 export type RideApp = TestApp & { timing: Timing };
 
-export async function startRideApp(opts: Omit<StartTestAppOptions, 'scheduler'> & { timing?: Partial<Timing> } = {}): Promise<RideApp> {
+export type RideAppOptions = Omit<StartTestAppOptions, 'scheduler'> & {
+  timing?: Partial<Timing>;
+  /** Hata enjeksiyonu: API'nin kullandığı scheduler'ı sarar (worker kendi kuyruğunu kullanır). */
+  wrapScheduler?: (inner: DispatchScheduler) => DispatchScheduler;
+  /** `stand_nearby_drivers` job scheduler'ı kurulsun mu (varsayılan false) ve aralığı (ms). */
+  nearby?: boolean;
+  nearbyEveryMs?: number;
+  /** Worker timing'ine eklenen ek alanlar (ör. uzlaştırıcı aralığı); backend adı bilinen alanlar için. */
+  extraWorkerTiming?: Record<string, number>;
+};
+
+export async function startRideApp(opts: RideAppOptions = {}): Promise<RideApp> {
   const timing: Timing = { ...FAST_TIMING, ...opts.timing };
   const url = inject('redisUrl');
   const bullConnection = new Redis(url, { maxRetriesPerRequest: null });
@@ -33,9 +44,11 @@ export async function startRideApp(opts: Omit<StartTestAppOptions, 'scheduler'> 
   const workerRedis = new Redis(url, { maxRetriesPerRequest: 1 });
   const subscriber = new Redis(url, { maxRetriesPerRequest: null });
   const emitterRedis = new Redis(url, { maxRetriesPerRequest: null });
-  const scheduler = createDispatchScheduler(bullConnection, { reminderFirstMs: timing.reminderFirstMs });
+  const baseScheduler = createDispatchScheduler(bullConnection, { reminderFirstMs: timing.reminderFirstMs });
+  const scheduler = opts.wrapScheduler ? opts.wrapScheduler(baseScheduler) : baseScheduler;
 
-  const t = await startTestApp({ redisAdapter: true, ...opts, scheduler });
+  const { timing: _t, wrapScheduler: _w, nearby: _n, nearbyEveryMs: _ne, extraWorkerTiming: _e, ...appOpts } = opts;
+  const t = await startTestApp({ redisAdapter: true, ...appOpts, scheduler });
 
   let workers: RideWorkers | undefined;
   try {
@@ -46,13 +59,14 @@ export async function startRideApp(opts: Omit<StartTestAppOptions, 'scheduler'> 
       emitter: createWorkerEmitter(emitterRedis),
       log: pino({ level: 'silent' }),
       subscriber,
-      nearby: false,
+      nearby: opts.nearby ?? false,
       timing: {
         waveDelaysMs: timing.waveDelaysMs,
         continuousScanMs: timing.continuousScanMs,
         reminderEveryMs: timing.reminderEveryMs,
-        nearbyEveryMs: 10_000,
+        nearbyEveryMs: opts.nearbyEveryMs ?? 10_000,
         locationFreshMs: timing.locationFreshMs,
+        ...opts.extraWorkerTiming,
       },
     });
   } catch (err) {
@@ -65,7 +79,7 @@ export async function startRideApp(opts: Omit<StartTestAppOptions, 'scheduler'> 
     timing,
     async close() {
       await workers?.close();
-      await scheduler.close();
+      await baseScheduler.close();
       await close();
       await Promise.allSettled([bullConnection, workerBull, workerRedis, subscriber, emitterRedis].map((r) => r.quit()));
     },

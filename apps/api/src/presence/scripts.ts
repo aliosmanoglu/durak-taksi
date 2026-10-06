@@ -56,6 +56,7 @@ end
 redis.call('ZREM', KEYS[2], ARGV[1])
 redis.call('ZREM', KEYS[3], ARGV[1])
 redis.call('HSET', KEYS[1], '${F.status}', 'offline', '${F.offlineReason}', ARGV[4])
+redis.call('HDEL', KEYS[1], '${F.rideId}')
 local v = dnBumpVersion(KEYS[4], nowMs)
 redis.call('EXPIRE', KEYS[1], ARGV[2])
 return {'offline', v}

@@ -85,8 +85,12 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('driver', id);
     // Faz 3 kararı (b): eşleşmiş ride varsa searching'e döner (sebep driver_suspended); sonra şoför offline olur.
-    await rides?.releaseDriverForSuspension(id);
-    await presence?.forceOffline(id);
+    // releaseDriverForSuspension hata verse de forceOffline çalışır (şoför GEO'da kalmasın); hata yine yukarı gider.
+    try {
+      await rides?.releaseDriverForSuspension(id);
+    } finally {
+      await presence?.forceOffline(id);
+    }
     res.json({ ok: true, data: row });
   });
 

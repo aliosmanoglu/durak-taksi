@@ -13,6 +13,8 @@ export const redisKeys = {
   rideCandidates: (rideId: string) => `dn:ride:${rideId}:candidates`,
   rideExcluded: (rideId: string) => `dn:ride:${rideId}:excluded`,
   standActiveRides: (standId: string) => `dn:stand:${standId}:active_rides`,
+  /** Uzlaştırıcı işareti (`kind`: `driver` | `ride`): bozukluk ilk görüldüğünde konur, ikinci turda onarılır. TTL'li. */
+  reconcileSuspect: (kind: string, id: string) => `dn:reconcile:suspect:${kind}:${id}`,
 } as const;
 
 /** Varlık (presence) zamanlamaları. Worker'daki değerler ortam değişkeniyle ezilebilir (kabul testi için). */
@@ -118,7 +120,7 @@ export type DispatchJobData = { rideId: string; searchVersion: number; wave: num
 export type ReminderJobData = { rideId: string; searchVersion: number; n: number };
 
 /** Kuyruk adları. */
-export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder', nearby: 'nearby' } as const;
+export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder', nearby: 'nearby', reconcile: 'reconcile' } as const;
 
 /** `dn:ride:{id}` hash alan adları. `status` değerleri `RideStatus`. */
 export const RIDE_HASH = {

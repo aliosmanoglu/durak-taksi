@@ -23,6 +23,14 @@ const envSchema = z.object({
   DISPATCH_SCAN_EVERY_S: z.coerce.number().positive().default(DISPATCH.CONTINUOUS_SCAN_EVERY_S),
   /** `ride_still_open`: ilk hatırlatmayı API zamanlar (API'de `REMINDER_FIRST_SEC`); sonrakiler bu aralıkla (sn). */
   REMINDER_EVERY_SEC: z.coerce.number().positive().default(REMINDER.EVERY_SEC),
+  /** Uzlaştırıcı tarama aralığı (sn). */
+  RECONCILE_EVERY_S: z.coerce.number().positive().default(30),
+  /** `searching` ride bu süreden yeniyse job'sız sayılmaz (sn). */
+  RECONCILE_MIN_AGE_S: z.coerce.number().positive().default(30),
+  /** `created` ride bu süreden eskiyse yetim sayılıp `searching`'e alınır (sn). */
+  RECONCILE_ORPHAN_AGE_S: z.coerce.number().positive().default(60),
+  /** Uzlaştırıcının hatırlatmayı yeniden kurarken kullandığı ilk gecikme (API'deki `REMINDER_FIRST_SEC` ile aynı olmalı). */
+  REMINDER_FIRST_SEC: z.coerce.number().positive().default(REMINDER.FIRST_SEC),
   NEARBY_EVERY_S: z.coerce.number().positive().default(DISPATCH.NEARBY_EVERY_S),
   LOCATION_FRESH_MS: z.coerce.number().int().positive().default(DISPATCH.LOCATION_FRESH_MS),
 });
