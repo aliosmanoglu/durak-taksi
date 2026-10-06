@@ -27,6 +27,7 @@ import { request } from './http';
 import * as location from './location';
 import { notifyLocal } from './notify';
 import * as presence from './presence';
+import * as rides from './rides';
 import { storage } from './storage';
 
 let accessToken: string | null = null;
@@ -153,6 +154,11 @@ function startRealtime() {
       }
     },
     onSessionSync: (p) => presence.handleSessionSync(p),
+    onRideRequested: rides.handleRideRequested,
+    onRideTaken: rides.handleRideTaken,
+    onRideAccepted: rides.handleRideAccepted,
+    onRideCancelled: rides.handleRideCancelled,
+    onRideCompleted: rides.handleRideCompleted,
     onAuthExpired() {
       // Proaktif yenileme kaçtıysa: hemen, ağ hatasında 5 sn aralıkla (sunucu 30 sn bekler).
       clearTimeout(refreshTimer);
@@ -202,14 +208,23 @@ export async function boot() {
   if (booted) return;
   booted = true;
   bindPersistence();
-  const [refresh, profile, wantsOnline, lastRoutineSentAt, tracking] = await Promise.all([
+  const [refresh, profile, wantsOnline, lastRoutineSentAt, tracking, soundEnabled, cachedRide] = await Promise.all([
     storage.getRefreshToken(),
     storage.getProfile(),
     storage.getWantsOnline(),
     storage.getLastRoutineSentAt(),
     location.isTracking(),
+    storage.getSoundEnabled(),
+    storage.getActiveRide(),
   ]);
-  store.setState({ ...initialAppState({ wantsOnline, lastRoutineSentAt }), profile, tracking });
+  // Önbellekteki yolculuk yalnızca oturum varsa geçerlidir; sunucu `session_sync`'i doğrulayana kadar soluk gösterilir.
+  const activeRide = refresh ? cachedRide : null;
+  if (!refresh && cachedRide) void storage.setActiveRide(null);
+  store.setState({
+    ...initialAppState({ wantsOnline, lastRoutineSentAt, soundEnabled, activeRide }),
+    profile,
+    tracking,
+  });
   await presence.refreshDeviceState();
   if (!refresh) {
     // Oturum yokken kalmış görev (ör. zorla kapatma) durdurulur.
@@ -262,7 +277,7 @@ export async function login(phone: string, password: string): Promise<LoginResul
   await storage.setLastRoutineSentAt(null);
   await loadProfile();
   store.setState({
-    ...initialAppState({ wantsOnline: false, lastRoutineSentAt: null }),
+    ...initialAppState({ wantsOnline: false, lastRoutineSentAt: null, soundEnabled: store.getState().soundEnabled }),
     profile: store.getState().profile,
     perm: store.getState().perm,
     gps: store.getState().gps,
@@ -302,20 +317,23 @@ export function cancelLogout() {
 
 async function clearLocalSession(reason: SessionEndReason | null) {
   loggingOut = true;
+  // Askıya alma eşleşmeyi düşürür: giriş ekranı şeridi bunu söyler (faz3 4.8).
+  const hadRide = store.getState().activeRide != null;
+  rides.resetRideServices();
   bumpGeneration();
   presence.stopSyncWatch();
   await location.stopTracking();
   closeRealtime();
   accessToken = null;
   await storage.clearSession();
-  const { perm, gps, appActive } = store.getState();
+  const { perm, gps, appActive, soundEnabled } = store.getState();
   store.setState({
-    ...initialAppState(),
+    ...initialAppState({ soundEnabled }),
     perm,
     gps,
     appActive,
     auth: 'signedOut',
-    sessionEnded: reason && reason !== 'pending' ? reason : null,
+    sessionEnded: reason === 'suspended' && hadRide ? 'suspendedWithRide' : reason && reason !== 'pending' ? reason : null,
     showPending: reason === 'pending',
   });
   loggingOut = false;
@@ -329,7 +347,10 @@ export function endSession(reason: SessionEndReason) {
   log('session.end', { reason });
   void (async () => {
     try {
-      if (!store.getState().appActive) await notifyLocal(T.notif.sessionEnded);
+      if (!store.getState().appActive) {
+        const withRide = reason === 'suspended' && store.getState().activeRide != null;
+        await notifyLocal(withRide ? T.ride.notif.suspended : T.notif.sessionEnded);
+      }
       await clearLocalSession(reason);
     } finally {
       ending = false;

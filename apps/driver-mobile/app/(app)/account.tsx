@@ -1,6 +1,6 @@
 // E6 Hesap (Account.dc.html + LogoutDialog.dc.html). Telefon maskeli; ücret/ödeme yok.
 import { useEffect, useState } from 'react';
-import { Linking, Modal, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Linking, Modal, Platform, Pressable, ScrollView, Switch, View } from 'react-native';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
@@ -10,6 +10,7 @@ import { T } from '@/lib/texts';
 import { colors } from '@/lib/theme';
 import { openSettings } from '@/services/actions';
 import { readNotificationPermission } from '@/services/notify';
+import { setSoundEnabled } from '@/services/rides';
 import { cancelLogout, logout } from '@/services/session';
 import { Button } from '@/ui/Button';
 import { ChevronIcon } from '@/ui/Icons';
@@ -79,6 +80,8 @@ export default function AccountScreen() {
   const profile = useApp((s) => s.profile);
   const perm = useApp((s) => s.perm);
   const server = useApp((s) => s.server);
+  const hasRide = useApp((s) => s.activeRide != null);
+  const soundEnabled = useApp((s) => s.soundEnabled);
   const [notif, setNotif] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
   const [dialog, setDialog] = useState<Dialog>(null);
 
@@ -86,7 +89,7 @@ export default function AccountScreen() {
     void readNotificationPermission().then(setNotif);
   }, []);
 
-  const busy = server === 'busy';
+  // Aktif yolculukla çıkış yapılabilir: yolculuk sürer, tekrar girince devam eder (faz3 4.8); düğme devre dışı değildir.
   const active = server === 'available' || server === 'busy';
   const permValue =
     perm === 'background'
@@ -146,19 +149,33 @@ export default function AccountScreen() {
           ) : null}
         </View>
 
+        <View style={card}>
+          <View
+            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 72, paddingHorizontal: 16 }}
+          >
+            <View style={{ flex: 1, gap: 2 }}>
+              <Txt size={18}>{T.account.sound}</Txt>
+              <Txt size={16} color={colors.muted}>
+                {T.account.soundHint}
+              </Txt>
+            </View>
+            <Switch
+              accessibilityLabel={`${T.account.sound}: ${soundEnabled ? T.account.soundOn : T.account.soundOff}`}
+              value={soundEnabled}
+              onValueChange={setSoundEnabled}
+              trackColor={{ false: colors.outlineSoft, true: colors.green }}
+              thumbColor={colors.light}
+            />
+          </View>
+        </View>
+
         <Txt size={16} color={colors.muted} style={{ paddingHorizontal: 4 }}>
           {T.account.version(version, build)}
         </Txt>
         <View style={{ flexGrow: 1 }} />
-        {busy ? (
-          <Txt size={16} color={colors.muted} style={{ textAlign: 'center' }}>
-            {T.logout.busy}
-          </Txt>
-        ) : null}
         <Button
           label={T.logout.cta}
-          variant={busy ? 'disabled' : 'danger'}
-          disabled={busy}
+          variant="danger"
           height={72}
           fontSize={22}
           onPress={() => setDialog('confirm')}
@@ -176,7 +193,13 @@ export default function AccountScreen() {
                 {T.logout.title}
               </Txt>
               <Txt size={19} color={colors.textSoft} style={{ lineHeight: 28 }}>
-                {dialog === 'networkError' ? T.logout.errNetwork : active ? T.logout.confirmActive : T.logout.confirm}
+                {dialog === 'networkError'
+                  ? T.logout.errNetwork
+                  : hasRide
+                    ? T.ride.logout.confirmBusy
+                    : active
+                      ? T.logout.confirmActive
+                      : T.logout.confirm}
               </Txt>
               {dialog === 'networkError' ? (
                 <>

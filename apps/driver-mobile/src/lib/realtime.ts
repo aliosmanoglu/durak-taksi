@@ -23,12 +23,22 @@ export type RealtimeHandlers = {
   onConnectError(err: { message: string; data?: unknown }, serverRejected: boolean): void;
   onSessionSync(payload: unknown): void;
   onAuthExpired(): void;
+  /** Ride event'leri (Faz 3): payload'lar doğrulanmadan gelir; denetim ride servisindedir. */
+  onRideRequested(payload: unknown): void;
+  onRideTaken(payload: unknown): void;
+  onRideAccepted(payload: unknown): void;
+  onRideCancelled(payload: unknown): void;
+  onRideCompleted(payload: unknown): void;
 };
 
 type AckEvent =
   | typeof DRIVER_EVENTS.goOnline
   | typeof DRIVER_EVENTS.goOffline
   | typeof DRIVER_EVENTS.sessionSyncRequest
+  | typeof DRIVER_EVENTS.rideAccept
+  | typeof DRIVER_EVENTS.rideDecline
+  | typeof DRIVER_EVENTS.rideDriverCancel
+  | typeof DRIVER_EVENTS.rideComplete
   | typeof COMMON_EVENTS.authRefresh;
 
 let socket: Socket | null = null;
@@ -48,6 +58,11 @@ export function initRealtime(url: string, getToken: () => string | null, h: Real
   s.on('connect_error', (err: Error & { data?: unknown }) => h.onConnectError(err, !s.active));
   s.on(COMMON_EVENTS.sessionSync, (p: unknown) => h.onSessionSync(p));
   s.on(COMMON_EVENTS.authExpired, () => h.onAuthExpired());
+  s.on(DRIVER_EVENTS.rideRequested, (p: unknown) => h.onRideRequested(p));
+  s.on(DRIVER_EVENTS.rideTaken, (p: unknown) => h.onRideTaken(p));
+  s.on(DRIVER_EVENTS.rideAccepted, (p: unknown) => h.onRideAccepted(p));
+  s.on(DRIVER_EVENTS.rideCancelled, (p: unknown) => h.onRideCancelled(p));
+  s.on(DRIVER_EVENTS.rideCompleted, (p: unknown) => h.onRideCompleted(p));
   socket = s;
 }
 

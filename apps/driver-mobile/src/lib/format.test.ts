@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { phoneSchema } from '@duraknet/shared';
-import { formatClock, formatPhoneInput, formatPlate, formatVehicle, formatWait, maskPhone } from './format';
+import { formatClock, formatPhoneInput, formatPlate, formatVehicle, formatWait, maskPhone, formatDistance, formatElapsed, formatElapsedA11y } from './format';
 
 describe('telefon', () => {
   it('yazılanı 05XX XXX XX XX biçimine getirir', () => {
@@ -37,5 +37,31 @@ describe('plaka / süre / araç', () => {
   it('aracı renk + model olarak birleştirir', () => {
     expect(formatVehicle('Beyaz', 'Fiat Egea')).toBe('Beyaz Fiat Egea');
     expect(formatVehicle(null, ' ')).toBeNull();
+  });
+});
+
+describe('Faz 3 biçimleri', () => {
+  it('formatDistance: < 1000 m metre, ≥ 1000 m Türkçe ondalık virgüllü km', () => {
+    expect(formatDistance(850)).toBe('850 m');
+    expect(formatDistance(0)).toBe('0 m');
+    expect(formatDistance(999.7)).toBe('1,0 km');
+    expect(formatDistance(1200)).toBe('1,2 km');
+    expect(formatDistance(12_000)).toBe('12,0 km');
+    expect(formatDistance(-5)).toBe('0 m');
+  });
+
+  it('formatElapsed: sn / dk sn / sa dk; negatif 0', () => {
+    expect(formatElapsed(42_000)).toBe('42 sn');
+    expect(formatElapsed(59_999)).toBe('59 sn');
+    expect(formatElapsed(185_000)).toBe('3 dk 05 sn');
+    expect(formatElapsed(60_000)).toBe('1 dk 00 sn');
+    expect(formatElapsed(72 * 60_000)).toBe('1 sa 12 dk');
+    expect(formatElapsed(-5000)).toBe('0 sn');
+  });
+
+  it('formatElapsedA11y yalnızca dakika eşiklerini söyler', () => {
+    expect(formatElapsedA11y(30_000)).toBe('1 dakikadan az');
+    expect(formatElapsedA11y(130_000)).toBe('2 dakika');
+    expect(formatElapsedA11y(75 * 60_000)).toBe('1 saat 15 dakika');
   });
 });

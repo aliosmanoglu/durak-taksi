@@ -44,3 +44,30 @@ export function formatVehicle(color?: string | null, model?: string | null): str
   const v = [color, model].filter((x): x is string => !!x && x.trim().length > 0).join(' ');
   return v.length > 0 ? v : null;
 }
+
+/** Mesafe: < 1000 m → "850 m", ≥ 1000 → "1,2 km" (Türkçe ondalık virgülü). */
+export function formatDistance(m: number): string {
+  const v = Math.max(0, m);
+  if (Math.round(v) < 1000) return `${Math.round(v)} m`;
+  return `${(Math.round(v / 100) / 10).toFixed(1).replace('.', ',')} km`;
+}
+
+/**
+ * Geçen süre (faz3 Bölüm 2): < 60 sn → "42 sn"; < 60 dk → "3 dk 05 sn"; ≥ 60 dk → "1 sa 12 dk".
+ * Negatif değer 0'a sabitlenir.
+ */
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s} sn`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} dk ${String(s % 60).padStart(2, '0')} sn`;
+  return `${Math.floor(m / 60)} sa ${String(m % 60).padStart(2, '0')} dk`;
+}
+
+/** Ekran okuyucu için geçen süre: yalnızca dakika eşikleri ("2 dakika"); 1 dk altında "1 dakikadan az". */
+export function formatElapsedA11y(ms: number): string {
+  const m = Math.floor(Math.max(0, ms) / 60_000);
+  if (m < 1) return '1 dakikadan az';
+  if (m < 60) return `${m} dakika`;
+  return `${Math.floor(m / 60)} saat ${m % 60} dakika`;
+}

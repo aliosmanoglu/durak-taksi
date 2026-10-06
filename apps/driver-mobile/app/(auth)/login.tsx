@@ -21,6 +21,7 @@ const SESSION_BANNER = {
   ended: { tone: 'blue', text: T.session.ended },
   suspended: { tone: 'red', text: T.session.suspended },
   loggedOutElsewhere: { tone: 'blue', text: T.session.loggedOutElsewhere },
+  suspendedWithRide: { tone: 'red', text: T.ride.session.suspendedWithRide },
 } as const;
 
 export default function LoginScreen() {

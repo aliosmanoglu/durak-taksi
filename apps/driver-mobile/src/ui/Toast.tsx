@@ -17,7 +17,7 @@ export function Toast() {
     AccessibilityInfo.announceForAccessibility(toast.text);
     const t = setTimeout(() => {
       if (store.getState().toast?.id === toast.id) store.setState({ toast: null });
-    }, TOAST_MS);
+    }, toast.ms ?? TOAST_MS);
     return () => clearTimeout(t);
   }, [toast]);
 

@@ -4,10 +4,10 @@ import { AccessibilityInfo, Pressable, ScrollView, useWindowDimensions, View } f
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { formatPlate } from '@/lib/format';
+import { formatDistance, formatPlate } from '@/lib/format';
 import { deriveHome, noticeView, type BannerAction, type HomeView } from '@/lib/presence/home-view';
 import { T } from '@/lib/texts';
-import { colors, sizes } from '@/lib/theme';
+import { colors, sizes, tones } from '@/lib/theme';
 import { enableGps, goOnlineFlow, openSettings } from '@/services/actions';
 import * as presence from '@/services/presence';
 import { Button, type ButtonVariant } from '@/ui/Button';
@@ -48,7 +48,8 @@ export default function HomeScreen() {
   const router = useRouter();
   const state = useApp((s) => s);
   const now = useNow(1000);
-  const view = useMemo(() => deriveHome(state, now), [state, now]);
+  const ride = state.activeRide;
+  const view = useMemo(() => deriveHome(state, now, { hasActiveRide: ride != null }), [state, now, ride]);
   const notice = state.notice ? noticeView(state.notice) : null;
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
@@ -97,6 +98,54 @@ export default function HomeScreen() {
     if (kind === 'enableGps') return void enableGps();
     router.push('/permissions');
   }
+
+  // Faz 3 (4.2): açık çağrılar alanı ve aktif yolculuk kartı.
+  const liveRequests = state.requests.filter((r) => !r.taken);
+  const nearest = liveRequests[0];
+  const requestsCard =
+    !ride && state.server === 'available' && nearest ? (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${T.ride.home.openRequests(liveRequests.length)}. ${nearest.pickupAddress}`}
+        onPress={() => router.push('/requests')}
+        style={({ pressed }) => ({
+          gap: 6,
+          padding: 18,
+          borderRadius: 18,
+          backgroundColor: tones.yellow.bg,
+          borderWidth: 1,
+          borderColor: tones.yellow.border,
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <Txt bold size={24} color={tones.yellow.color}>
+            {T.ride.home.openRequests(liveRequests.length)}
+          </Txt>
+          {state.unseen.length > 0 ? (
+            <Txt bold size={16} color={colors.bg} style={{ backgroundColor: tones.yellow.color, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
+              {T.ride.home.newBadge}
+            </Txt>
+          ) : null}
+        </View>
+        <Txt size={19} color={colors.textBody} numberOfLines={2}>
+          {formatDistance(nearest.distanceM)} · {nearest.pickupAddress}
+        </Txt>
+      </Pressable>
+    ) : null;
+  const rideCard = ride ? (
+    <View style={{ gap: 14, padding: 18, borderRadius: 18, backgroundColor: tones.blue.bg, borderWidth: 1, borderColor: tones.blue.border }}>
+      <View style={{ gap: 4 }}>
+        <Txt bold size={22} color={tones.blue.color}>
+          {T.ride.home.activeRide(ride.shortCode)}
+        </Txt>
+        <Txt size={19} color={colors.textBody} numberOfLines={2}>
+          {ride.pickupAddress}
+        </Txt>
+      </View>
+      <Button label={T.ride.home.goToRide} variant="blue" height={88} fontSize={26} radius={22} onPress={() => router.push(`/ride/${ride.rideId}`)} />
+    </View>
+  ) : null;
 
   const plate = state.profile?.plate ? formatPlate(state.profile.plate) : '—';
   const updating = state.syncPending && state.conn === 'connected' && state.server !== 'unknown';
@@ -185,6 +234,8 @@ export default function HomeScreen() {
             {status}
           </ScrollView>
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', gap: 20 }}>
+            {rideCard}
+            {requestsCard}
             {button}
             {banner}
           </ScrollView>
@@ -192,10 +243,11 @@ export default function HomeScreen() {
       ) : (
         <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 20, gap: 20 }}>
           {noticeCard}
+          {requestsCard}
           {status}
+          {rideCard}
           {button}
           {banner}
-          {/* Faz 3: açık çağrılar alanı. Faz 2'de hiçbir şey çizilmez. */}
         </ScrollView>
       )}
     </SafeAreaView>
