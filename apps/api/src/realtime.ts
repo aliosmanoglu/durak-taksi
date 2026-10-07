@@ -17,14 +17,15 @@ import {
   rideDriverCancelSchema,
   rooms,
   STAND_EVENTS,
+  standSessionSyncSchema,
   type Ack,
   type DriverSessionSync,
   type DriverStatusResult,
   type ErrorCode,
+  type RideAcceptAck,
   type RideCancelledEvent,
   type RideCompletedEvent,
   type RideCreateResult,
-  type RideSnapshot,
   type StandSessionSync,
 } from '@duraknet/shared';
 import { AppError } from './http/errors';
@@ -265,7 +266,7 @@ function registerDriverRideHandlers(
   const claims = () => dataOf(socket).auth;
 
   socket.on(DRIVER_EVENTS.rideAccept, async (payload: unknown, ack?: unknown) => {
-    const reply = replyOf<RideSnapshot>(ack);
+    const reply = replyOf<RideAcceptAck>(ack);
     if (!(await ready)) return;
     const parsed = rideAcceptSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
@@ -277,9 +278,9 @@ function registerDriverRideHandlers(
       socket.disconnect(true);
       return;
     }
-    let snapshot: RideSnapshot;
+    let accepted: RideAcceptAck;
     try {
-      snapshot = await rides.accept(id, parsed.data.rideId);
+      accepted = await rides.accept(id, parsed.data.rideId);
     } catch (err) {
       return reply(toAckError(err, log));
     }
@@ -302,7 +303,7 @@ function registerDriverRideHandlers(
         return;
       }
     }
-    reply({ ok: true, data: snapshot });
+    reply({ ok: true, data: accepted });
   });
 
   socket.on(DRIVER_EVENTS.rideDecline, async (payload: unknown, ack?: unknown) => {
@@ -350,7 +351,8 @@ function registerDriverRideHandlers(
 async function standSessionSync(socket: Socket, rides: RideService | null): Promise<StandSessionSync> {
   const activeRides = rides ? await rides.standSync(dataOf(socket).auth.sub) : [];
   for (const r of activeRides) if (r.status === 'matched') await socket.join(rooms.ride(r.rideId));
-  return { activeRides, serverTime: new Date().toISOString() };
+  // Çıkış sözleşmeye uygun mu: şema ile doğrulanır (fazla alan atılır, bozuk gövde istemciye gitmez).
+  return standSessionSyncSchema.parse({ activeRides, serverTime: new Date().toISOString() });
 }
 
 /** Durak ride event'leri: çağrı aç, iptal, tamamla, oturum durumu iste. */

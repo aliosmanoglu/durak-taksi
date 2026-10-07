@@ -7,10 +7,10 @@ import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import {
   DISPATCH, DRIVER_EVENTS, DRIVER_SUSPENDED_REASON, DRIVER_HASH, PRESENCE, redisKeys, RIDE_HASH, RIDE_EVENTS_CHANNEL, RIDE_ROOM_EVENTS,
-  STAND_EVENTS,
-  type LatLng, type RideCancelledEvent, type RideCompletedEvent, type RideCreateResult,
+  STAND_EVENTS, STAND_SUSPENDED_REASON,
+  type LatLng, type RideAcceptAck, type RideCancelledEvent, type RideCompletedEvent, type RideCreateResult,
   type RideDriverCancelledEvent, type RideEventMessage, type RideMatchedEvent, type RideRequest,
-  type RideSnapshot, type RideStatus,
+  type RideSnapshot, type RideStatus, type RideTakenEvent,
 } from '@duraknet/shared';
 import { isUniqueViolation, toGeography, type Db } from '../db';
 import { AppError } from '../http/errors';
@@ -36,8 +36,11 @@ export type DriverRideSync = { activeRide?: RideSnapshot; openRequests: RideRequ
 export interface RideService {
   /** Durak: çağrı açar (`created` → `searching`), önbelleği yazar, dispatch'i başlatır. */
   createRide(standId: string, input: RideCreateInput): Promise<RideCreateResult>;
-  /** Şoför: FCFS kabul. Kaybeden `RIDE_NOT_AVAILABLE` / `NOT_A_CANDIDATE` / `DRIVER_NOT_AVAILABLE`. */
-  accept(driverId: string, rideId: string): Promise<RideSnapshot>;
+  /**
+   * Şoför: FCFS kabul. Kaybeden `RIDE_NOT_AVAILABLE` / `NOT_A_CANDIDATE` / `DRIVER_NOT_AVAILABLE`.
+   * Dönen veri `RideSnapshot` + kabuldeki `busy` geçişinin `presenceVersion`'ı (ack); `ride_accepted` event'i düz snapshot'tır.
+   */
+  accept(driverId: string, rideId: string): Promise<RideAcceptAck>;
   /** Şoför: çağrıyı reddeder (excluded). Zaten kapalı çağrı için idempotent başarı. */
   decline(driverId: string, rideId: string): Promise<void>;
   /** Şoför: eşleşmiş çağrıyı iptal eder → `searching`'e döner, şoför excluded. */
@@ -61,6 +64,13 @@ export interface RideService {
    * Çağıran ardından `presence.forceOffline` çağırmalıdır.
    */
   releaseDriverForSuspension(driverId: string): Promise<void>;
+  /**
+   * Durak askıya alma (tek sistem kaynaklı iptal istisnası): durağın açık (`searching`/`matched`) ride'larını
+   * `stand_suspended` sebebiyle `cancelled` yapar (`cancel_reason = 'stand_suspended'`); eşleşmiş şoföre `ride_cancelled`,
+   * adaylara `ride_taken`, şoför `busy → available`. Tekil hatalar loglanıp atlanır; kaçanı uzlaştırıcı kapatır.
+   * Döner: iptal edilen ride sayısı.
+   */
+  releaseStandForSuspension(standId: string): Promise<number>;
   /** `session_sync` için: aktif ride ve (şoför `available` ise) açık çağrılar. */
   driverSync(driverId: string, driverStatus: string): Promise<DriverRideSync>;
   /** `session_sync` için: durağın `searching`/`matched` ride'ları. */
@@ -185,6 +195,28 @@ export function createRideService(opts: RideServiceOptions): RideService {
     await startSearchSafe(tr.rideId, tr.version);
   }
 
+  /** Durak iptali / durak askıya alma sonrası ortak iş (PG commit edilmiştir): önbellek, event'ler, oda temizliği. */
+  async function afterStandClose(tr: TransitionResult, reason: string | undefined): Promise<RideCancelledEvent> {
+    const cands = await mirror(tr, { releaseDriverId: tr.driverId, excludeDriver: false });
+    const ev: RideCancelledEvent = { rideId: tr.rideId, ...(reason ? { reason } : {}), version: tr.version };
+    if (tr.from === 'searching') {
+      // Açık çağrı adayların ekranından kalkar.
+      if (cands.length > 0) {
+        const pipe = redis.pipeline();
+        for (const c of cands) pipe.srem(redisKeys.driverRequests(c), tr.rideId);
+        await pipe.exec().catch((e: unknown) => log.warn({ err: errMsg(e) }, 'istek kümeleri temizlenemedi'));
+      }
+      const taken: RideTakenEvent = { rideId: tr.rideId, version: tr.version };
+      for (const c of cands) sink.toDriver(c, DRIVER_EVENTS.rideTaken, taken);
+    } else if (tr.driverId) {
+      sink.toDriver(tr.driverId, DRIVER_EVENTS.rideCancelled, ev);
+    }
+    sink.toStand(tr.standId, STAND_EVENTS.rideCancelled, ev);
+    sink.leaveRide(tr.rideId, 'both');
+    publish(tr.rideId, tr.from, 'cancelled', tr.version);
+    return ev;
+  }
+
   return {
     async createRide(standId, input) {
       let inserted: { id: string; short_code: string } | undefined;
@@ -247,6 +279,7 @@ export function createRideService(opts: RideServiceOptions): RideService {
         throw notAvailable();
       }
       const newVersion = Number(r[1]);
+      const presenceVersion = Number(r[2]);
 
       let tr: TransitionResult;
       try {
@@ -277,11 +310,16 @@ export function createRideService(opts: RideServiceOptions): RideService {
         redis.smembers(redisKeys.rideExcluded(rideId)),
         redis.smembers(redisKeys.driverRequests(driverId)),
       ]);
+      const others = ownRequests.filter((o) => o !== rideId);
       const pipe = redis.pipeline();
       for (const c of cands) pipe.srem(redisKeys.driverRequests(c), rideId);
-      for (const other of ownRequests) if (other !== rideId) pipe.srem(redisKeys.rideCandidates(other), driverId);
+      for (const other of others) pipe.srem(redisKeys.rideCandidates(other), driverId);
       pipe.del(redisKeys.driverRequests(driverId));
       await pipe.exec().catch((e: unknown) => log.warn({ err: errMsg(e), rideId }, 'istek kümeleri temizlenemedi'));
+      // Kazananın diğer açık çağrıları için `ride_taken.version`: o ride'ların önbellekteki güncel sürümü.
+      const otherVersions = await Promise.all(
+        others.map((o) => redis.hget(redisKeys.ride(o), RIDE_HASH.version).catch(() => null)),
+      );
 
       const [snapshot] = await snapshotsOf({ kind: 'ids', ids: [rideId] });
       if (!snapshot) throw notAvailable();
@@ -291,11 +329,18 @@ export function createRideService(opts: RideServiceOptions): RideService {
       sink.joinRide(rideId, { driverId, standId: tr.standId });
       sink.toDriver(driverId, DRIVER_EVENTS.rideAccepted, snapshot);
       for (const c of cands) {
-        if (c !== driverId && !excluded.includes(c)) sink.toDriver(c, DRIVER_EVENTS.rideTaken, { rideId });
+        if (c !== driverId && !excluded.includes(c)) {
+          const ev: RideTakenEvent = { rideId, version: tr.version };
+          sink.toDriver(c, DRIVER_EVENTS.rideTaken, ev);
+        }
       }
-      for (const other of ownRequests) {
-        if (other !== rideId) sink.toDriver(driverId, DRIVER_EVENTS.rideTaken, { rideId: other });
-      }
+      others.forEach((other, i) => {
+        // Sürümü bilinmeyen (önbelleği düşmüş) ride için event atlanır: istemci zaten session_sync ile düzeltir.
+        const v = otherVersions[i];
+        if (v == null || !Number.isFinite(Number(v))) return;
+        const ev: RideTakenEvent = { rideId: other, version: Number(v) };
+        sink.toDriver(driverId, DRIVER_EVENTS.rideTaken, ev);
+      });
       if (snapshot.driver) {
         const ev: RideMatchedEvent = {
           rideId,
@@ -312,7 +357,7 @@ export function createRideService(opts: RideServiceOptions): RideService {
         sink.toStand(tr.standId, STAND_EVENTS.rideMatched, ev);
       }
       publish(rideId, 'searching', 'matched', tr.version);
-      return snapshot;
+      return { ...snapshot, presenceVersion };
     },
 
     async decline(driverId, rideId) {
@@ -376,25 +421,29 @@ export function createRideService(opts: RideServiceOptions): RideService {
         expectedVersion: input.version,
         ...(input.reason ? { cancelReason: input.reason } : {}),
       });
-      const cands = await mirror(tr, { releaseDriverId: tr.driverId, excludeDriver: false });
-      const ev: RideCancelledEvent = {
-        rideId: tr.rideId, ...(input.reason ? { reason: input.reason } : {}), version: tr.version,
-      };
-      if (tr.from === 'searching') {
-        // Açık çağrı adayların ekranından kalkar.
-        if (cands.length > 0) {
-          const pipe = redis.pipeline();
-          for (const c of cands) pipe.srem(redisKeys.driverRequests(c), tr.rideId);
-          await pipe.exec().catch((e: unknown) => log.warn({ err: errMsg(e) }, 'istek kümeleri temizlenemedi'));
+      return afterStandClose(tr, input.reason);
+    },
+
+    async releaseStandForSuspension(standId) {
+      const open = await db
+        .selectFrom('rides').select('id').where('stand_id', '=', standId).where('status', 'in', ['searching', 'matched'])
+        .execute();
+      let closed = 0;
+      for (const { id } of open) {
+        try {
+          // Sürüm koşulu yok: sistem iptali durumdan bağımsız; yarışan kabul/tamamlama varsa koşullu UPDATE belirler.
+          const tr = await machine.transition({
+            rideId: id, reason: 'stand_suspended', actor: 'system', standId, cancelReason: STAND_SUSPENDED_REASON,
+          });
+          await afterStandClose(tr, STAND_SUSPENDED_REASON);
+          closed++;
+        } catch (err) {
+          // Araya giren tamamlama/iptal (AppError) normaldir; diğer hatalar uzlaştırıcıya bırakılır.
+          if (!(err instanceof AppError)) log.error({ err: errMsg(err), rideId: id }, 'durak askıya alma: ride iptal edilemedi');
         }
-        for (const c of cands) sink.toDriver(c, DRIVER_EVENTS.rideTaken, { rideId: tr.rideId });
-      } else if (tr.driverId) {
-        sink.toDriver(tr.driverId, DRIVER_EVENTS.rideCancelled, ev);
       }
-      sink.toStand(standId, STAND_EVENTS.rideCancelled, ev);
-      sink.leaveRide(tr.rideId, 'both');
-      publish(tr.rideId, tr.from, 'cancelled', tr.version);
-      return ev;
+      if (closed > 0) log.info({ standId, closed }, 'askıdaki durağın açık çağrıları iptal edildi');
+      return closed;
     },
 
     async driverSync(driverId, driverStatus) {

@@ -12,8 +12,11 @@ export const RIDE_TRANSITION_REASONS = [
   'driver_cancelled', // matched → searching (şoför)
   'driver_suspended', // matched → searching (yönetici askıya aldı / çıkış; sistem)
   'stand_cancelled', // searching|matched → cancelled
+  'stand_suspended', // searching|matched → cancelled (yönetici durağı askıya aldı; sistem — tek istisna)
   'completed', // matched → completed
 ] as const;
+/** `cancel_reason` ve `ride_cancelled.reason`: durak askıya alındığı için sistem iptal etti. */
+export const STAND_SUSPENDED_REASON = 'stand_suspended' as const;
 /** `ride_driver_cancelled.reason` ve geçiş sebebi: şoför yönetici askısıyla düştü (şoför kendi vazgeçmedi). */
 export const DRIVER_SUSPENDED_REASON = 'driver_suspended' as const;
 export type RideTransitionReason = (typeof RIDE_TRANSITION_REASONS)[number];
@@ -33,6 +36,9 @@ export const RIDE_TRANSITIONS: readonly RideTransition[] = [
   // `cancelled`'a yalnızca durak geçirir; zaman aşımı / sistem iptali yoktur.
   { from: 'searching', to: 'cancelled', reason: 'stand_cancelled', actors: ['stand'] },
   { from: 'matched', to: 'cancelled', reason: 'stand_cancelled', actors: ['stand'] },
+  // Tek istisna: durak askıya alınınca açık ride'ları sistem iptal eder (başka sistem kaynaklı iptal yoktur).
+  { from: 'searching', to: 'cancelled', reason: 'stand_suspended', actors: ['system'] },
+  { from: 'matched', to: 'cancelled', reason: 'stand_suspended', actors: ['system'] },
   { from: 'matched', to: 'completed', reason: 'completed', actors: ['driver', 'stand'] },
 ];
 

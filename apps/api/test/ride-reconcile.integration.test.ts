@@ -7,7 +7,9 @@
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest';
-import { DRIVER_EVENTS, DRIVER_HASH, QUEUES, redisKeys, STAND_EVENTS, type DispatchJobData } from '@duraknet/shared';
+import {
+  DRIVER_EVENTS, DRIVER_HASH, QUEUES, redisKeys, STAND_EVENTS, STAND_SUSPENDED_REASON, type DispatchJobData,
+} from '@duraknet/shared';
 import type { DispatchScheduler } from '../src/rides/scheduler';
 import { startRideApp, type RideApp } from './helpers/ride-app';
 import { emitAck, north, Scope, sleep, uniqueCity, uuid, waitFor } from './helpers/rides';
@@ -197,4 +199,35 @@ describe('O1: busy ama matched ride\'ı olmayan şoför', () => {
     expect(await s.inGeo(d.id)).toBe(false);
     expect(await s.rideStatus(rideId)).toBe('matched');
   }, 60_000);
+});
+
+describe('O5: durağı askıda olan açık ride (D5 uzlaştırıcı kuralı)', () => {
+  it('API iptal yolu atlanmış (durak doğrudan DB üzerinden askıda): matched ve searching ride cancelled olur, şoför serbest kalır, adaylar ride_taken alır', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const stand = await s.stand(city, { initialRadiusM: 2000, maxRadiusM: 2000 });
+    const a = await s.driver(north(city, 200));
+    const r1 = await s.createRide(stand);
+    await a.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r1.rideId), { ms: 10_000 });
+    expect((await emitAck(a.socket, DRIVER_EVENTS.rideAccept, { rideId: r1.rideId })).ok).toBe(true);
+    const b = await s.driver(north(city, 300));
+    const r2 = await s.createRide(stand);
+    await b.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r2.rideId), { ms: 10_000 });
+
+    // releaseStandForSuspension çalışmadan askıya alma: yalnızca PG durumu değişir.
+    await t.db.updateTable('stands').set({ status: 'suspended' }).where('id', '=', stand.id).execute();
+
+    await s.waitRideStatus(r1.rideId, 'cancelled', RECONCILE_WAIT_MS);
+    await s.waitRideStatus(r2.rideId, 'cancelled', RECONCILE_WAIT_MS);
+    for (const id of [r1.rideId, r2.rideId]) expect((await s.ride(id))?.cancel_reason).toBe(STAND_SUSPENDED_REASON);
+
+    await a.rec.waitFor(DRIVER_EVENTS.rideCancelled, (e) => e.rideId === r1.rideId && e.reason === STAND_SUSPENDED_REASON);
+    await waitFor(() => s.driverHash(a.id), (h) => h.status === 'available', 5000);
+    await waitFor(() => s.inGeo(a.id), (g) => g, 5000);
+    const [taken] = await b.rec.waitFor(DRIVER_EVENTS.rideTaken, forRide(r2.rideId));
+    expect(taken.version).toBe((await s.ride(r2.rideId))!.version);
+    expect(await t.redis.smembers(redisKeys.driverRequests(b.id))).not.toContain(r2.rideId);
+    for (const id of [r1.rideId, r2.rideId]) expect((await s.rideHash(id)).status).toBe('cancelled');
+    expect(await t.redis.scard(redisKeys.standActiveRides(stand.id))).toBe(0);
+  }, 120_000);
 });

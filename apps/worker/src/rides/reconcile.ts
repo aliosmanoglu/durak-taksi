@@ -7,14 +7,16 @@
 //  4. Şoför hash'i `busy` ama PG'de `matched` ride'ı yok: şoför `available` yapılır (Lua, presenceVersion artar).
 //  6. PG'de `matched` ama şoför hesabı `suspended` (askıya alma ile kabul yarışı): ride `searching`'e döner, şoför offline.
 //  5. Yakın zamanda terminal olmuş ride'ın hash'i hâlâ açık görünüyorsa terminal duruma çekilir.
+//  7. PG'de açık (`searching`/`matched`) ride'ı olup durağı `suspended` olan: ride `stand_suspended` sebebiyle `cancelled`
+//     yapılır (RideStateMachine'deki sistem geçişiyle aynı kural; çağrının kendiliğinden iptali tek bu istisnadır).
 // 3 ve 4 devam eden bir kabulle (Lua → PG arası, milisaniyeler) yarışabileceği için "iki kez gör" kuralıyla çalışır:
 // bozukluk ilk görüldüğünde TTL'li işaret konur, bir sonraki turda hâlâ bozuksa onarılır.
 // Loglara ham konum/telefon yazılmaz.
 import type { Job, Queue } from 'bullmq';
 import {
-  canTransition, DISPATCH, STAND_EVENTS, DRIVER_HASH, jobIds, PRESENCE, PRESENCE_VERSION_LUA, redisKeys, REMINDER, RIDE_HASH,
+  canTransition, DISPATCH, DRIVER_EVENTS, DRIVER_SUSPENDED_REASON, STAND_EVENTS, STAND_SUSPENDED_REASON, DRIVER_HASH, jobIds, PRESENCE, PRESENCE_VERSION_LUA, redisKeys, REMINDER, RIDE_HASH,
   roundJobNumber,
-  type ReminderJobData, type RideDriverCancelledEvent,
+  type ReminderJobData, type RideCancelledEvent, type RideDriverCancelledEvent, type RideTakenEvent,
 } from '@duraknet/shared';
 import { addDispatchJob, addReminderJob, ENSURE_CACHE, type RideJobDeps } from './dispatch';
 
@@ -32,6 +34,7 @@ export type ReconcileResult = {
   driversReleased: number;
   terminalRepaired: number;
   suspendedReleased: number;
+  standSuspendedCancelled: number;
 };
 
 // Ride hash'i `matched` ise `searching`'e çevirir (PG sürümüyle). KEYS: 1=ride  ARGV: 1=version
@@ -93,6 +96,31 @@ dnBumpVersion(KEYS[4], dnNowMs())
 return 1
 `;
 
+// Durağı askıdaki ride'ı iptal eder: hash terminal, durağın açık kümesinden çıkar, TTL'ler; eşleşmiş şoför `busy` ise
+// ve rideId aynıysa `available` yapılır (GEO'ya geri yazılır, presenceVersion artar). Döner: önceki adaylar.
+// KEYS: 1=ride 2=candidates 3=excluded 4=stand active_rides 5=driver 6=geo 7=heartbeat 8=driver pv
+// ARGV: 1=rideId 2=sürüm 3=şoför ('' yok) 4=terminalTtlS 5=driverHashTtlS
+const CANCEL_FOR_STAND_SUSPENSION = `${PRESENCE_VERSION_LUA}
+local cands = redis.call('SMEMBERS', KEYS[2])
+redis.call('HSET', KEYS[1], '${RIDE_HASH.status}', 'cancelled', '${RIDE_HASH.version}', ARGV[2])
+redis.call('HDEL', KEYS[1], '${RIDE_HASH.driverId}')
+redis.call('SREM', KEYS[4], ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+redis.call('EXPIRE', KEYS[3], ARGV[4])
+if ARGV[3] ~= '' and redis.call('HGET', KEYS[5], '${DRIVER_HASH.status}') == 'busy'
+   and redis.call('HGET', KEYS[5], '${DRIVER_HASH.rideId}') == ARGV[1] then
+  redis.call('HSET', KEYS[5], '${DRIVER_HASH.status}', 'available')
+  redis.call('HDEL', KEYS[5], '${DRIVER_HASH.rideId}')
+  redis.call('EXPIRE', KEYS[5], ARGV[5])
+  dnBumpVersion(KEYS[8], dnNowMs())
+  local pos = redis.call('HMGET', KEYS[5], '${DRIVER_HASH.lng}', '${DRIVER_HASH.lat}')
+  if pos[1] and pos[2] then redis.call('GEOADD', KEYS[6], pos[1], pos[2], ARGV[3]) end
+  redis.call('ZADD', KEYS[7], 'NX', dnNowMs(), ARGV[3])
+end
+return cands
+`;
+
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Bozukluk ilk kez mi görülüyor? İlkse işaret konur ve `false` döner; işaret varsa siler ve `true` (onar) döner. */
@@ -132,6 +160,7 @@ export async function processReconcile(deps: RideJobDeps, opts: ReconcileOptions
   const orphanAgeMs = timing.reconcileOrphanAgeMs ?? 60_000;
   const res: ReconcileResult = {
     orphansStarted: 0, dispatchRestarted: 0, reminderRestarted: 0, ridesRepaired: 0, driversReleased: 0, terminalRepaired: 0, suspendedReleased: 0,
+    standSuspendedCancelled: 0,
   };
 
   // --- 1. Yetim `created` ride'lar. Geçiş RideStateMachine ile aynı kuraldadır (shared RIDE_TRANSITIONS):
@@ -266,7 +295,7 @@ export async function processReconcile(deps: RideJobDeps, opts: ReconcileOptions
   // --- 6. PG'de `matched` ama şoför hesabı askıda. Geçiş RideStateMachine'deki `driver_suspended` (matched → searching,
   // aktör sistem) ile aynı kuraldadır; tek koşullu UPDATE. İki kez görme kuralı: askıya alma yolunun kendi
   // `releaseDriverForSuspension`'ı ile çakışmasın.
-  if (canTransition('matched', 'searching', 'driver_suspended', 'system')) {
+  if (canTransition('matched', 'searching', DRIVER_SUSPENDED_REASON, 'system')) {
     try {
       const sus = await pool.query<{ id: string }>(
         `SELECT r.id FROM rides r JOIN drivers d ON d.id = r.driver_id
@@ -302,7 +331,7 @@ export async function processReconcile(deps: RideJobDeps, opts: ReconcileOptions
           redisKeys.driverPresenceVersion(o.old_driver), o.old_driver, PRESENCE.DRIVER_HASH_TTL_S,
         );
         const ev: RideDriverCancelledEvent = {
-          rideId: o.id, reason: 'driver_suspended', driverName: o.name, plate: o.plate, version: o.version,
+          rideId: o.id, reason: DRIVER_SUSPENDED_REASON, driverName: o.name, plate: o.plate, version: o.version,
         };
         deps.emitter.toStand(o.stand_id, STAND_EVENTS.rideDriverCancelled, ev);
         await freeJobId(deps.dispatchQueue, jobIds.dispatch(o.id, roundJobNumber(o.version, 1)));
@@ -313,6 +342,54 @@ export async function processReconcile(deps: RideJobDeps, opts: ReconcileOptions
       }
     } catch (err) {
       log.warn({ err: errMsg(err) }, "askıdaki şoförün ride'ları uzlaştırılamadı");
+    }
+  }
+
+  // --- 7. PG'de açık ride'ı olup durağı askıda olan. İki kez görme kuralı: askıya alma yolunun kendi
+  // `releaseStandForSuspension`'ı ile çakışmasın. Tek koşullu UPDATE (RideStateMachine `stand_suspended` ile aynı kural).
+  if (
+    canTransition('searching', 'cancelled', STAND_SUSPENDED_REASON, 'system') &&
+    canTransition('matched', 'cancelled', STAND_SUSPENDED_REASON, 'system')
+  ) {
+    try {
+      const open = await pool.query<{ id: string }>(
+        `SELECT r.id FROM rides r JOIN stands s ON s.id = r.stand_id
+          WHERE r.status IN ('searching', 'matched') AND s.status = 'suspended' LIMIT 50`,
+      );
+      for (const c of open.rows) {
+        if (!(await confirmed(deps, 'suspended-stand-ride', c.id))) continue;
+        const upd = await pool.query<{ id: string; version: number; stand_id: string; driver_id: string | null }>(
+          `WITH t AS (SELECT r.id FROM rides r JOIN stands s ON s.id = r.stand_id
+                       WHERE r.id = $1 AND r.status IN ('searching', 'matched') AND s.status = 'suspended' FOR UPDATE OF r)
+           UPDATE rides r SET status = 'cancelled', version = r.version + 1, cancelled_at = now(), cancel_reason = $2
+             FROM t WHERE r.id = t.id AND r.status IN ('searching', 'matched')
+           RETURNING r.id, r.version, r.stand_id, r.driver_id::text AS driver_id`,
+          [c.id, STAND_SUSPENDED_REASON],
+        );
+        const o = upd.rows[0];
+        if (!o) continue;
+        const driverId = o.driver_id ?? '';
+        const cands = (await redis.eval(
+          CANCEL_FOR_STAND_SUSPENSION, 8,
+          redisKeys.ride(o.id), redisKeys.rideCandidates(o.id), redisKeys.rideExcluded(o.id), redisKeys.standActiveRides(o.stand_id),
+          redisKeys.driver(driverId || '_'), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.driverPresenceVersion(driverId || '_'),
+          o.id, String(o.version), driverId, DISPATCH.RIDE_TERMINAL_TTL_S, PRESENCE.DRIVER_HASH_TTL_S,
+        )) as string[];
+        if (driverId) {
+          const ev: RideCancelledEvent = { rideId: o.id, reason: STAND_SUSPENDED_REASON, version: o.version };
+          deps.emitter.toDriver(driverId, DRIVER_EVENTS.rideCancelled, ev);
+        } else {
+          const taken: RideTakenEvent = { rideId: o.id, version: o.version };
+          for (const cand of cands) {
+            await redis.srem(redisKeys.driverRequests(cand), o.id);
+            deps.emitter.toDriver(cand, DRIVER_EVENTS.rideTaken, taken);
+          }
+        }
+        res.standSuspendedCancelled++;
+        log.warn({ rideId: o.id }, 'askıdaki durağın açık çağrısı iptal edildi (uzlaştırıcı)');
+      }
+    } catch (err) {
+      log.warn({ err: errMsg(err) }, "askıdaki durağın ride'ları uzlaştırılamadı");
     }
   }
 

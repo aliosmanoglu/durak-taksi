@@ -10,14 +10,23 @@ describe('ride durum makinesi matrisi', () => {
   });
 
   it('cancelled\'a yalnızca durak geçirir (zaman aşımı/sistem iptali yok)', () => {
-    for (const t of RIDE_TRANSITIONS.filter((x) => x.to === 'cancelled')) expect(t.actors).toEqual(['stand']);
+    // Tek istisna: durak askıya alma (stand_suspended) — yalnızca sistem.
+    for (const t of RIDE_TRANSITIONS.filter((x) => x.to === 'cancelled')) {
+      expect(t.actors).toEqual(t.reason === 'stand_suspended' ? ['system'] : ['stand']);
+    }
     for (const from of RIDE_STATUSES) {
-      for (const reason of RIDE_TRANSITION_REASONS) {
+      for (const reason of RIDE_TRANSITION_REASONS.filter((r) => r !== 'stand_suspended')) {
         for (const actor of RIDE_ACTORS.filter((a) => a !== 'stand')) {
           expect(canTransition(from, 'cancelled', reason, actor)).toBe(false);
         }
       }
+      for (const actor of RIDE_ACTORS.filter((a) => a !== 'system')) {
+        expect(canTransition(from, 'cancelled', 'stand_suspended', actor)).toBe(false);
+      }
     }
+    expect(canTransition('searching', 'cancelled', 'stand_suspended', 'system')).toBe(true);
+    expect(canTransition('matched', 'cancelled', 'stand_suspended', 'system')).toBe(true);
+    expect(canTransition('created', 'cancelled', 'stand_suspended', 'system')).toBe(false);
     expect(canTransition('searching', 'cancelled', 'stand_cancelled', 'stand')).toBe(true);
     expect(canTransition('matched', 'cancelled', 'stand_cancelled', 'stand')).toBe(true);
     // created iptal edilemez (dispatch_started ile hemen searching'e geçer).

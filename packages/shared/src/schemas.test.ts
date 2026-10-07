@@ -88,7 +88,8 @@ describe('ride payload şemaları', () => {
     expect(rideCompletedSchema.safeParse({ rideId: id, completedAt: now, version: 4 }).success).toBe(true);
     expect(rideCompletedSchema.safeParse({ rideId: id, completedAt: 'dün', version: 4 }).success).toBe(false);
     expect(rideCancelledSchema.safeParse({ rideId: id, version: 4 }).success).toBe(true);
-    expect(rideTakenSchema.safeParse({ rideId: id }).success).toBe(true);
+    expect(rideTakenSchema.safeParse({ rideId: id, version: 3 }).success).toBe(true);
+    expect(rideTakenSchema.safeParse({ rideId: id }).success).toBe(false);
     expect(nearbyDriversSchema.safeParse({ drivers: [{ id, location: pt }] }).success).toBe(true);
     expect(rideDriverLocationSchema.safeParse({ rideId: id, location: pt, ts: 1 }).success).toBe(true);
   });
@@ -126,16 +127,21 @@ describe('ride durum makinesi tablosu', () => {
         'matched>searching:driver_suspended',
         'searching>cancelled:stand_cancelled',
         'matched>cancelled:stand_cancelled',
+        'searching>cancelled:stand_suspended',
+        'matched>cancelled:stand_suspended',
         'matched>completed:completed',
       ].sort(),
     );
   });
 
-  it('cancelled yalnızca durak aktörüyle; sistem/şoför iptali yok', () => {
+  it('cancelled yalnızca durak aktörüyle; tek istisna durak askıya alma (system)', () => {
     for (const from of ['searching', 'matched'] as const) {
       expect(canTransition(from, 'cancelled', 'stand_cancelled', 'stand')).toBe(true);
       expect(canTransition(from, 'cancelled', 'stand_cancelled', 'driver')).toBe(false);
       expect(canTransition(from, 'cancelled', 'stand_cancelled', 'system')).toBe(false);
+      expect(canTransition(from, 'cancelled', 'stand_suspended', 'system')).toBe(true);
+      expect(canTransition(from, 'cancelled', 'stand_suspended', 'stand')).toBe(false);
+      expect(canTransition(from, 'cancelled', 'stand_suspended', 'driver')).toBe(false);
     }
   });
 

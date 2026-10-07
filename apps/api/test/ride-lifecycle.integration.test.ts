@@ -2,7 +2,8 @@
 // durak iptali. CLAUDE.md Bölüm 1 (state machine) ve "Mevcut durum" → Faz 3 kararı.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
-  DRIVER_EVENTS, redisKeys, rideCompletedSchema, rideDriverCancelledSchema, rideSnapshotSchema, STAND_EVENTS,
+  DRIVER_EVENTS, redisKeys, rideAcceptAckSchema, rideCompletedSchema, rideDriverCancelledSchema, rideSnapshotSchema,
+  rideTakenSchema, STAND_EVENTS,
   type RideSnapshot,
 } from '@duraknet/shared';
 import { startRideApp, type RideApp } from './helpers/ride-app';
@@ -340,4 +341,69 @@ describe('7. karar (c): tamamlama ve durak iptali', () => {
     expect(await t.redis.sismember(redisKeys.driverRequests(b.id), rideId)).toBe(0);
     expect(await t.redis.sismember(redisKeys.driverRequests(a.id), rideId)).toBe(0);
   }, 30_000);
+});
+
+describe('ride_taken.version ve ride_accept ack presenceVersion', () => {
+  it('kabul ack presenceVersion taşır (busy geçişinin sürümü); ride_accepted düz snapshot kalır', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const stand = await s.stand(city);
+    const d = await s.driver(north(city, 200));
+    const { rideId } = await s.createRide(stand);
+    await d.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(rideId), { ms: 10_000 });
+    const ack = await emitAck(d.socket, DRIVER_EVENTS.rideAccept, { rideId });
+    expect(ack.ok).toBe(true);
+    const data = rideAcceptAckSchema.parse((ack as { data: unknown }).data);
+    expect(data.status).toBe('matched');
+    expect(data.presenceVersion).toBeGreaterThan(d.goOnline!.presenceVersion);
+    // Redis'teki güncel sürümle aynı; sonraki session_sync daha küçük sürüm taşımaz.
+    expect(data.presenceVersion).toBe(Number(await t.redis.get(redisKeys.driverPresenceVersion(d.id))));
+    const sync = await emitAck<{ presenceVersion: number; driverStatus: string }>(d.socket, DRIVER_EVENTS.sessionSyncRequest, {});
+    expect(sync.ok && sync.data?.driverStatus).toBe('busy');
+    expect(sync.ok && sync.data?.presenceVersion).toBe(data.presenceVersion);
+    const [accepted] = await d.rec.waitFor(DRIVER_EVENTS.rideAccepted, forRide(rideId));
+    expect('presenceVersion' in (accepted as object)).toBe(false);
+    expect(rideSnapshotSchema.parse(accepted).version).toBe(data.version);
+  }, 30_000);
+
+  it('ride_taken: kabulde kaybeden adaya ve durak iptalinde adaylara kapanış sürümüyle gider', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const stand = await s.stand(city);
+    const a = await s.driver(north(city, 200));
+    const b = await s.driver(north(city, 300));
+    const r1 = await s.createRide(stand);
+    await a.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r1.rideId), { ms: 10_000 });
+    await b.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r1.rideId), { ms: 10_000 });
+    const ack = await emitAck<RideSnapshot>(a.socket, DRIVER_EVENTS.rideAccept, { rideId: r1.rideId });
+    expect(ack.ok).toBe(true);
+    const matchedVersion = (await s.ride(r1.rideId))!.version;
+    const [taken] = await b.rec.waitFor(DRIVER_EVENTS.rideTaken, forRide(r1.rideId));
+    expect(rideTakenSchema.parse(taken).version).toBe(matchedVersion);
+
+    // Durak iptali (searching): adaylara iptal sürümüyle.
+    const c = await s.driver(north(city, 250));
+    const r2 = await s.createRide(stand);
+    await c.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r2.rideId), { ms: 10_000 });
+    await stand.rec.waitFor(STAND_EVENTS.rideSearching, forRide(r2.rideId));
+    const v = s.lastVersion(stand.rec, r2.rideId);
+    expect((await emitAck(stand.socket, STAND_EVENTS.rideCancel, { rideId: r2.rideId, version: v })).ok).toBe(true);
+    const [taken2] = await c.rec.waitFor(DRIVER_EVENTS.rideTaken, forRide(r2.rideId));
+    expect(rideTakenSchema.parse(taken2).version).toBe((await s.ride(r2.rideId))!.version);
+    expect(rideTakenSchema.parse(taken2).version).toBeGreaterThan(v);
+  }, 60_000);
+
+  it('kazananın diğer açık çağrıları ride_taken ile (güncel sürümle) kapanır', async () => {
+    s = new Scope(t);
+    const city = uniqueCity();
+    const stand = await s.stand(city);
+    const d = await s.driver(north(city, 200));
+    const r1 = await s.createRide(stand);
+    const r2 = await s.createRide(stand);
+    await d.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r1.rideId), { ms: 10_000 });
+    await d.rec.waitFor(DRIVER_EVENTS.rideRequested, forRide(r2.rideId), { ms: 10_000 });
+    expect((await emitAck(d.socket, DRIVER_EVENTS.rideAccept, { rideId: r1.rideId })).ok).toBe(true);
+    const [other] = await d.rec.waitFor(DRIVER_EVENTS.rideTaken, forRide(r2.rideId));
+    expect(rideTakenSchema.parse(other).version).toBe((await s.ride(r2.rideId))!.version);
+  }, 60_000);
 });

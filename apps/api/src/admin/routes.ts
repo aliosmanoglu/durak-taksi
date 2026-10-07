@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import pino, { type Logger } from 'pino';
 import { z } from 'zod';
 import { ACCOUNT_STATUSES } from '@duraknet/shared';
 import { requireAuth } from '../auth/middleware';
@@ -12,7 +13,7 @@ import type { Realtime } from '../realtime';
 const listQuery = z.object({ status: z.enum(ACCOUNT_STATUSES).optional() });
 const idParam = z.object({ id: z.uuid() });
 
-export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService): Router {
+export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService, log: Logger = pino({ level: 'silent' })): Router {
   const r = Router();
   r.use('/admin', requireAuth(deps, 'admin'));
 
@@ -104,6 +105,14 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .executeTakeFirst();
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('stand', id);
+    // Durak askıya alma = açık çağrıları sistem iptal eder (tek istisna; sebep `stand_suspended`). Askıya alma
+    // yukarıdaki UPDATE ile commit edilmiştir: ride iptali hata verirse hesap askıda kalır, hata loglanır ve
+    // istek başarılı döner; kaçan ride'ları worker uzlaştırıcısı kapatır (PG'de açık ride + askıdaki durak).
+    try {
+      await rides?.releaseStandForSuspension(id);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), standId: id }, 'durak askıya alma: açık çağrılar iptal edilemedi');
+    }
     res.json({ ok: true, data: row });
   });
 

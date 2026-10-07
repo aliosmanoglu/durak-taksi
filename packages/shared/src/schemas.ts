@@ -110,8 +110,18 @@ export const standSessionSyncSchema = z.object({
 export const rideCreateResultSchema = z.object({ rideId: z.uuid(), shortCode: z.string() });
 export type RideCreateResult = z.infer<typeof rideCreateResultSchema>;
 
-/** `/driver` `ride_taken`: başkası aldı veya çağrı kapandı (durak iptali dahil); ekrandan kaldırılır. */
-export const rideTakenSchema = z.object({ rideId: z.uuid() });
+/**
+ * `ride_accept` ack verisi: `RideSnapshot` + kabulde `busy` geçişinin yeni `presenceVersion`'ı.
+ * (`ride_accepted` event'i düz `RideSnapshot` kalır.)
+ */
+export const rideAcceptAckSchema = rideSnapshotSchema.extend({ presenceVersion: versionSchema });
+export type RideAcceptAck = z.infer<typeof rideAcceptAckSchema>;
+
+/**
+ * `/driver` `ride_taken`: başkası aldı veya çağrı kapandı (durak iptali / durak askıya alma dahil); ekrandan kaldırılır.
+ * `version`: ride'ın kapanış sürümü (kabul/iptal sonrası `rides.version`); istemci daha düşük sürümlüyü yok sayar.
+ */
+export const rideTakenSchema = z.object({ rideId: z.uuid(), version: versionSchema });
 export type RideTakenEvent = z.infer<typeof rideTakenSchema>;
 
 /** `/stand` `ride_searching`: her dalga/taramada. */
