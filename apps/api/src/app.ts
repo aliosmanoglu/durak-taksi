@@ -7,14 +7,14 @@ import { createAuthLimiters, type AuthLimiters } from './auth/limits';
 import { authRoutes } from './auth/routes';
 import type { AuthDeps } from './auth/service';
 import { errorHandler } from './http/errors';
+import type { PresenceService } from './presence/service';
 import { noopRealtime, type Realtime } from './realtime';
 import { standRoutes } from './stands/routes';
 
 export type ReadinessCheck = { name: string; check: () => Promise<void> };
 
-export type AppOptions = {
+type BaseAppOptions = {
   readinessChecks?: ReadinessCheck[];
-  auth?: AuthDeps;
   realtime?: Realtime;
   /** Kimlik uçları için hız sınırlayıcılar. Verilmezse bellek içi (yalnızca test); üretimde server.ts Redis store'lu olanları verir. */
   authLimiters?: AuthLimiters;
@@ -24,6 +24,13 @@ export type AppOptions = {
   /** Load balancer arkasında gerçek istemci IP'si için (rate limit). */
   trustProxy?: boolean | number | string;
 };
+
+/**
+ * `auth` verilirse `presence` zorunludur: askıya alma ve çıkışta şoför GEO'dan çıkarılır.
+ * `null` = bilinçli olarak devre dışı (yalnızca kimlik testleri). `auth`'suz kurulum yalnızca /health ve /ready sunar.
+ */
+export type AppOptions = BaseAppOptions &
+  ({ auth?: undefined; presence?: undefined } | { auth: AuthDeps; presence: PresenceService | null });
 
 export function createApp(opts: AppOptions = {}) {
   const checks = opts.readinessChecks ?? [];
@@ -62,8 +69,8 @@ export function createApp(opts: AppOptions = {}) {
 
   if (opts.auth) {
     const realtime = opts.realtime ?? noopRealtime;
-    app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters(), realtime));
-    app.use(adminRoutes(opts.auth, realtime));
+    app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters(), realtime, opts.presence ?? undefined));
+    app.use(adminRoutes(opts.auth, realtime, opts.presence ?? undefined));
     app.use(standRoutes(opts.auth));
   }
 

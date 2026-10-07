@@ -30,7 +30,8 @@ export type Ack<T = undefined> =
   | { ok: true; data?: T }
   | { ok: false; error: { code: ErrorCode; message: string } };
 
-export type DriverStatus = 'offline' | 'available' | 'busy';
+export const DRIVER_STATUSES = ['offline', 'available', 'busy'] as const;
+export type DriverStatus = (typeof DRIVER_STATUSES)[number];
 
 export type RideRequest = {
   rideId: string;
@@ -60,3 +61,14 @@ export type RideSnapshot = {
   createdAt: string;
   matchedAt?: string;
 };
+
+/** `driver_go_online` / `driver_go_offline` ack verisi. Aktif işi olan şoför `busy` kalır. */
+export type DriverStatusResult = { status: DriverStatus };
+
+/** `session_sync` — her (yeniden) bağlanmada sunucudan gelir; istemci state'ini bununla düzeltir. */
+export type DriverSessionSync = {
+  driverStatus: DriverStatus;
+  activeRide?: RideSnapshot; // Faz 3
+  openRequests: RideRequest[]; // Faz 3; şimdilik hep boş
+};
+export type StandSessionSync = { activeRides: RideSnapshot[] };

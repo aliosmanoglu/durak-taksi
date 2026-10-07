@@ -1,8 +1,11 @@
 // Entegrasyon testleri için gerçek bağımlılıklarla (PG + Redis) uygulama kurulumu.
-// server.ts ile aynı bağlama: Redis store'lu hız sınırlayıcılar, createServer(app) → attach.
+// server.ts ile aynı bağlama: Redis store'lu hız sınırlayıcılar, presence, createServer(app) → attach.
+// `redisAdapter: true` ile socket.io redis-adapter kurulur: aynı PG/Redis'e bağlı iki startTestApp
+// çağrısı iki API node'unu simüle eder (disconnectAccount vb. node'lar arası davranış).
 import { randomInt } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { Redis } from 'ioredis';
 import pino from 'pino';
 import { RedisStore, type RedisReply } from 'rate-limit-redis';
@@ -14,6 +17,7 @@ import { createAuthLimiters } from '../../src/auth/limits';
 import { hashPassword } from '../../src/auth/password';
 import type { AuthDeps } from '../../src/auth/service';
 import { createDb } from '../../src/db';
+import { createPresence } from '../../src/presence/service';
 import { createRealtime } from '../../src/realtime';
 
 export const ADMIN_USERNAME = 'yonetici';
@@ -39,10 +43,14 @@ export const uniqueUsername = () => `durak_${letters(4).toLowerCase()}${digits(6
 
 export type TestApp = Awaited<ReturnType<typeof startTestApp>>;
 
-export async function startTestApp() {
+export type StartTestAppOptions = { redisAdapter?: boolean };
+
+export async function startTestApp(opts: StartTestAppOptions = {}) {
   const { db, pool } = createDb(inject('pgUrl'));
   const redis = new Redis(inject('redisUrl'), { maxRetriesPerRequest: 1 });
   const log = pino({ level: 'silent' });
+  const presence = createPresence(redis);
+  const adapterClients = opts.redisAdapter ? [redis.duplicate(), redis.duplicate()] as const : undefined;
 
   const deps: AuthDeps = {
     db,
@@ -58,10 +66,18 @@ export async function startTestApp() {
       }),
   );
 
-  const { io, realtime, attach } = createRealtime(deps, log, { corsOrigin: '*' });
+  const { io, realtime, attach } = createRealtime(deps, log, {
+    corsOrigin: '*',
+    presence,
+    adapter: adapterClients ? createAdapter(adapterClients[0], adapterClients[1]) : undefined,
+  });
+  // Adapter aboneliklerini namespace oluşturulurken (createRealtime içinde) kuyruğa alır; ioredis komutları
+  // sırayla işler. Bu PING döndüğünde abonelikler etkindir: ilk node'lar arası yayın kaybolmaz.
+  if (adapterClients) await adapterClients[1].ping();
   const app = createApp({
     auth: deps,
     realtime,
+    presence,
     authLimiters,
     log,
     corsOrigin: '*',
@@ -197,11 +213,11 @@ export async function startTestApp() {
     await cleanup();
     await new Promise<void>((r) => io.close(() => r()));
     await new Promise<void>((r) => httpServer.close(() => r()));
-    await Promise.allSettled([db.destroy(), redis.quit()]);
+    await Promise.allSettled([db.destroy(), redis.quit(), ...(adapterClients ?? []).map((c) => c.quit())]);
   }
 
   return {
-    url, deps, db, pool, redis, http,
+    url, deps, db, pool, redis, presence, realtime, io, http,
     registerDriver, registerStand, approvedDriver, approvedStand,
     adminToken, adminAction, loginDriver, loginStand,
     socket, connectOk, connectError, cleanup, close,
