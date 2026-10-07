@@ -10,6 +10,8 @@ export const COMMON_EVENTS = {
 
 export const DRIVER_EVENTS = {
   goOnline: 'driver_go_online',
+  /** C → S `{}`; ack `Ack<DriverSessionSync>`. Bağlıyken güncel durumu istemek için (ör. arka plandan dönüş). */
+  sessionSyncRequest: 'session_sync_request',
   goOffline: 'driver_go_offline',
   locationUpdate: 'driver_location_update',
   rideRequested: 'ride_requested',

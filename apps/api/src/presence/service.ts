@@ -1,26 +1,59 @@
 // Şoför varlığı (CLAUDE.md Bölüm 5, Senaryo 1–2). Konum yalnızca Redis'te tutulur; PG'ye yazılmaz.
 // Durum okuyup ardından yazan işlemler (online/offline/konum) Lua ile atomiktir: aksi halde
 // "status oku → MULTI" arasında gelen offline/sweep, şoförü yanlışlıkla GEO'ya geri yazar.
+// Her durum geçişi `presenceVersion`'ı aynı script içinde artırır; offline geçişleri `offlineReason` yazar.
 import type { Redis } from 'ioredis';
-import { DRIVER_STATUSES, PRESENCE, redisKeys, type DriverStatus, type LatLng } from '@duraknet/shared';
+import {
+  DRIVER_HASH,
+  DRIVER_STATUSES,
+  OFFLINE_REASONS,
+  PRESENCE,
+  redisKeys,
+  type DriverStatus,
+  type DriverStatusResult,
+  type LatLng,
+  type OfflineReason,
+  type PresenceVersion,
+} from '@duraknet/shared';
 import { AppError } from '../http/errors';
-import { defineLua, GO_OFFLINE, GO_ONLINE, UPDATE_LOCATION } from './scripts';
+import { defineLua, GO_OFFLINE, GO_ONLINE, READ_STATE, UPDATE_LOCATION, type StoredOfflineReason } from './scripts';
 
 export type LocationUpdate = { location: LatLng; heading?: number };
 
+/** Şoförün anlık varlık durumu (`session_sync` gövdesinin varlık kısmı). */
+export type PresenceState = {
+  status: DriverStatus;
+  /** Yalnızca `status === 'offline'` iken bulunur. Hash yoksa / sebep yazılmamışsa `not_online`. */
+  offlineReason?: OfflineReason;
+  presenceVersion: PresenceVersion;
+};
+
+/** Konum yazılmadı çünkü şoför offline (hash yok, pasif, sweeper düşürmüş veya zorla çıkarılmış). */
+export type OfflineLocationResult = {
+  status: 'offline';
+  offlineReason: OfflineReason;
+  presenceVersion: PresenceVersion;
+};
+
 /**
  * `ok`: yazıldı. `throttled`: `LOCATION_THROTTLE_MS` içinde ikinci güncelleme, düştü.
- * `offline`: şoför offline (hash yok, pasif veya sweeper düşürmüş) — konum yazılmadı; istemci bunu
- * bilmeli ki "Aktif" görünüp çağrı alamaz halde kalmasın (realtime `session_sync` gönderir).
+ * Nesne: şoför offline — konum yazılmadı; istemci bunu bilmeli ki "Aktif" görünüp çağrı alamaz halde
+ * kalmasın (realtime bu nesneyle `session_sync` gönderir; sebep + sürüm aynı Lua'dan gelir).
  */
-export type LocationResult = 'ok' | 'throttled' | 'offline';
+export type LocationResult = 'ok' | 'throttled' | OfflineLocationResult;
 
 export interface PresenceService {
-  /** `offline` → `available`; GEO'ya ve heartbeat'e yazar. `busy` şoför `busy` kalır. */
-  goOnline(driverId: string, location: LatLng, now?: number): Promise<DriverStatus>;
-  /** `available` → `offline`; GEO'dan çıkarır. `busy` iken `INVALID_TRANSITION` (AppError) fırlatır. */
-  goOffline(driverId: string): Promise<DriverStatus>;
-  /** Hesap askıya alınınca / çıkış yapınca: durumdan bağımsız GEO'dan ve heartbeat'ten çıkarır, `offline` yapar. */
+  /**
+   * `offline` → `available`; GEO'ya ve heartbeat'e yazar, `offlineReason`'ı siler, sürümü artırır.
+   * `busy` şoför `busy` kalır ve sürüm değişmez (mevcut sürüm döner).
+   */
+  goOnline(driverId: string, location: LatLng, now?: number): Promise<DriverStatusResult>;
+  /** `available` → `offline` (sebep `user`); GEO'dan çıkarır. `busy` iken `INVALID_TRANSITION` (AppError) fırlatır. */
+  goOffline(driverId: string): Promise<DriverStatusResult>;
+  /**
+   * Hesap askıya alınınca / çıkış yapınca: durumdan bağımsız GEO'dan ve heartbeat'ten çıkarır,
+   * `offline` yapar (sebep `forced`).
+   */
   forceOffline(driverId: string): Promise<void>;
   /**
    * Hash + heartbeat'i günceller; yalnızca `available` ise GEO'ya yazar. `offline` şoförün konumu yok sayılır.
@@ -30,39 +63,60 @@ export interface PresenceService {
   updateLocation(driverId: string, update: LocationUpdate, now?: number): Promise<LocationResult>;
   /** Hash yoksa `offline`. */
   getStatus(driverId: string): Promise<DriverStatus>;
+  /** Durum + sebep + sürüm tek atomik okumayla. Hash yoksa `offline` / `not_online` / Redis'in o anki zamanı. */
+  getState(driverId: string): Promise<PresenceState>;
 }
 
 const isDriverStatus = (v: unknown): v is DriverStatus =>
   typeof v === 'string' && (DRIVER_STATUSES as readonly string[]).includes(v);
 
+const isOfflineReason = (v: unknown): v is OfflineReason =>
+  typeof v === 'string' && (OFFLINE_REASONS as readonly string[]).includes(v);
+
+/** Lua'dan gelen ham alanları `PresenceState`'e çevirir. Eski veride sebep yoksa `not_online`. */
+function toState(rawStatus: unknown, rawReason: unknown, rawVersion: unknown): PresenceState {
+  const status = isDriverStatus(rawStatus) ? rawStatus : 'offline';
+  const presenceVersion = Number(rawVersion);
+  if (status !== 'offline') return { status, presenceVersion };
+  // status alanı hiç yoksa (hash yok) hash'te kalmış bir sebep de anlamsızdır.
+  const offlineReason = rawStatus === 'offline' && isOfflineReason(rawReason) ? rawReason : 'not_online';
+  return { status, offlineReason, presenceVersion };
+}
+
 // Koordinatlar Redis'e string olarak gider; Number#toString her zaman nokta ondalık ayraç kullanır.
 const num = (n: number) => String(n);
 
+const USER: StoredOfflineReason = 'user';
+const FORCED: StoredOfflineReason = 'forced';
+
 export function createPresence(redis: Redis): PresenceService {
-  const goOnlineLua = defineLua(redis, 'dnPresenceGoOnline', 3, GO_ONLINE);
-  const goOfflineLua = defineLua(redis, 'dnPresenceGoOffline', 3, GO_OFFLINE);
-  const updateLocationLua = defineLua(redis, 'dnPresenceUpdateLocation', 4, UPDATE_LOCATION);
+  const goOnlineLua = defineLua(redis, 'dnPresenceGoOnline', 4, GO_ONLINE);
+  const goOfflineLua = defineLua(redis, 'dnPresenceGoOffline', 4, GO_OFFLINE);
+  const updateLocationLua = defineLua(redis, 'dnPresenceUpdateLocation', 5, UPDATE_LOCATION);
+  const readStateLua = defineLua(redis, 'dnPresenceReadState', 2, READ_STATE);
   const ttl = PRESENCE.DRIVER_HASH_TTL_S;
 
-  const offline = (driverId: string, force: boolean) =>
-    goOfflineLua(
-      redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat,
-      driverId, ttl, force ? '1' : '0',
-    );
+  const offline = async (driverId: string, force: boolean) => {
+    const [status, version] = (await goOfflineLua(
+      redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.driverPresenceVersion(driverId),
+      driverId, ttl, force ? '1' : '0', force ? FORCED : USER,
+    )) as [string, number];
+    return { status, presenceVersion: Number(version) };
+  };
 
   return {
     async goOnline(driverId, location, now = Date.now()) {
-      const r = await goOnlineLua(
-        redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat,
+      const [status, version] = (await goOnlineLua(
+        redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.driverPresenceVersion(driverId),
         driverId, num(location.lat), num(location.lng), now, ttl,
-      );
-      return r === 'busy' ? 'busy' : 'available';
+      )) as [string, number];
+      return { status: status === 'busy' ? 'busy' : 'available', presenceVersion: Number(version) };
     },
 
     async goOffline(driverId) {
       const r = await offline(driverId, false);
-      if (r === 'busy') throw new AppError(409, 'INVALID_TRANSITION', 'Aktif iş varken pasif moda geçilemez');
-      return 'offline';
+      if (r.status === 'busy') throw new AppError(409, 'INVALID_TRANSITION', 'Aktif iş varken pasif moda geçilemez');
+      return { status: 'offline', presenceVersion: r.presenceVersion };
     },
 
     // Faz 3 notu: busy şoför de koşulsuz offline yapılır; hash'teki `rideId` ve eşleşmiş ride'ın
@@ -72,18 +126,28 @@ export function createPresence(redis: Redis): PresenceService {
     },
 
     async updateLocation(driverId, update, now = Date.now()) {
-      const r = await updateLocationLua(
+      const r = (await updateLocationLua(
         redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.locationThrottle(driverId),
+        redisKeys.driverPresenceVersion(driverId),
         driverId, num(update.location.lat), num(update.location.lng),
         update.heading === undefined ? '' : num(update.heading),
         now, ttl, PRESENCE.LOCATION_THROTTLE_MS,
-      );
-      return r === 1 ? 'ok' : r === 0 ? 'throttled' : 'offline';
+      )) as [number, string?, string?, number?];
+      if (r[0] === 1) return 'ok';
+      if (r[0] === 0) return 'throttled';
+      const s = toState(r[1], r[2], r[3]);
+      // updateLocation yalnızca status available/busy değilken -1 döner; toState burada hep offline verir.
+      return { status: 'offline', offlineReason: s.offlineReason ?? 'not_online', presenceVersion: s.presenceVersion };
     },
 
     async getStatus(driverId) {
-      const s = await redis.hget(redisKeys.driver(driverId), 'status');
+      const s = await redis.hget(redisKeys.driver(driverId), DRIVER_HASH.status);
       return isDriverStatus(s) ? s : 'offline';
+    },
+
+    async getState(driverId) {
+      const [status, reason, version] = (await readStateLua(redisKeys.driver(driverId), redisKeys.driverPresenceVersion(driverId))) as [string, string, number];
+      return toState(status, reason, version);
     },
   };
 }

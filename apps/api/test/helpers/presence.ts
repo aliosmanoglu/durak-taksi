@@ -58,7 +58,10 @@ export async function cleanupPresence(redis: Redis, driverIds: Iterable<string>)
   m.zrem(redisKeys.geoAvailable, ...ids);
   m.zrem(redisKeys.heartbeat, ...ids);
   for (const id of ids) {
-    m.del(redisKeys.driver(id), redisKeys.locationThrottle(id), redisKeys.driverRequests(id));
+    m.del(
+      redisKeys.driver(id), redisKeys.locationThrottle(id), redisKeys.driverRequests(id),
+      redisKeys.driverPresenceVersion(id),
+    );
   }
   await m.exec();
 }

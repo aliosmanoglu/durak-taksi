@@ -62,12 +62,35 @@ export type RideSnapshot = {
   matchedAt?: string;
 };
 
-/** `driver_go_online` / `driver_go_offline` ack verisi. Aktif işi olan şoför `busy` kalır. */
-export type DriverStatusResult = { status: DriverStatus };
+/**
+ * Şoförün neden `offline` olduğu (sunucu `dn:driver:{id}` hash'inde tutar):
+ * - `user`: şoför `driver_go_offline` gönderdi.
+ * - `stale_heartbeat`: sweeper, konum gelmediği için düşürdü.
+ * - `forced`: askıya alma veya `/auth/logout` (`forceOffline`).
+ * - `not_online`: hiç aktif olmadı ya da hash'in süresi doldu (kayıt yok).
+ */
+export const OFFLINE_REASONS = ['user', 'stale_heartbeat', 'forced', 'not_online'] as const;
+export type OfflineReason = (typeof OFFLINE_REASONS)[number];
 
-/** `session_sync` — her (yeniden) bağlanmada sunucudan gelir; istemci state'ini bununla düzeltir. */
+/**
+ * Varlık durumunun sürümü: her durum geçişinde (online, offline, sweep, force) kesin artan sayı.
+ * Redis `TIME`'dan türetilir (epoch ms, en az önceki + 1), hash'in süresi dolsa da geri gitmez.
+ * İstemci aynı socket bağlantısında elindekinden küçük sürümlü `session_sync`'i / ack'i yok sayar.
+ */
+export type PresenceVersion = number;
+
+/** `driver_go_online` / `driver_go_offline` ack verisi. Aktif işi olan şoför `busy` kalır. */
+export type DriverStatusResult = { status: DriverStatus; presenceVersion: PresenceVersion };
+
+/**
+ * `session_sync` — her (yeniden) bağlanmada, offline şoför konum gönderdiğinde ve
+ * `session_sync_request` ack'inde gelir; istemci state'ini bununla düzeltir.
+ */
 export type DriverSessionSync = {
   driverStatus: DriverStatus;
+  /** Yalnızca `driverStatus === 'offline'` iken bulunur. */
+  offlineReason?: OfflineReason;
+  presenceVersion: PresenceVersion;
   activeRide?: RideSnapshot; // Faz 3
   openRequests: RideRequest[]; // Faz 3; şimdilik hep boş
 };
