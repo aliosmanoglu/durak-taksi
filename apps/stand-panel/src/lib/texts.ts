@@ -21,7 +21,7 @@ export const T = {
   pending: {
     title: 'Onay bekleniyor',
     body: 'Durağınız onay bekliyor. Yönetici onaylayınca giriş yapabilirsiniz.',
-    suspendedTitle: 'Hesap askıda',
+    suspendedTitle: 'Hesabınız askıya alındı',
     suspendedBody: 'Durak hesabı askıya alındı. Yöneticiyle görüşün.',
     back: 'GİRİŞE DÖN',
   },
@@ -106,6 +106,7 @@ export const T = {
     driverCancelled: (name: string, plate: string) => `${name} (${plate}) vazgeçti. Arama yeniden başladı.`,
     driverSuspended: (name: string, plate: string) => `${name} (${plate}) hesabı kapatıldı. Arama yeniden başladı.`,
     reasonPrefix: 'Sebep: ',
+    standSuspended: 'Durak hesabı askıya alındığı için çağrı kapandı.',
     ok: 'TAMAM',
     changed: 'Çağrı durumu değişti.',
     unknown: 'Sonuç bilinmiyor. Bağlantı gelince güncellenecek.',

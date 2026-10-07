@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { RideRequest, RideSnapshot } from '@duraknet/shared';
+import { STAND_SUSPENDED_REASON, type RideRequest, type RideSnapshot } from '@duraknet/shared';
 import { ACTION_LOCK_MS, DECLINE_UNDO_MS, MAX_TRACKED_RIDE_VERSIONS, TAKEN_CARD_MS } from '../constants';
 import { initialPresence } from '../presence/state';
+import { acceptPresenceVersion } from '../presence/transitions';
+import { parseRideAcceptAck } from './parse';
 import { T } from '../texts';
 import { initialRides, type OpenRequest } from './state';
 import {
@@ -151,7 +153,7 @@ describe('ride_taken', () => {
 
   it('odaklı çağrı kapanırsa odak en yakına geçer, 700 ms kilit, sessizleşir, 3 sn bildirim', () => {
     const s = two();
-    const r = onRideTaken(s, A, NOW + 5000);
+    const r = onRideTaken(s, A, 9, NOW + 5000);
     const n = apply(s, r);
     expect(rid(n.requests)).toEqual([B]);
     expect(n.focusedId).toBe(B);
@@ -162,26 +164,26 @@ describe('ride_taken', () => {
 
   it('odak dışı çağrı kapanırsa odak ve kilit değişmez', () => {
     const s = two();
-    const n = apply(s, onRideTaken(s, B, NOW + 5000));
+    const n = apply(s, onRideTaken(s, B, 9, NOW + 5000));
     expect(n.focusedId).toBe(A);
     expect(n.actionLockedUntil).toBe(0);
   });
 
   it('son çağrı kapanınca liste boşalır, odak null (D1 kendiliğinden kapanır)', () => {
     let s = apply(ctx(), onRideRequested(ctx(), req(A, 500), NOW));
-    s = apply(s, onRideTaken(s, A, NOW + 1));
+    s = apply(s, onRideTaken(s, A, 9, NOW + 1));
     expect(s.requests).toEqual([]);
     expect(s.focusedId).toBeNull();
   });
 
   it('kabul bekleyen çağrıda ack belirler: event yok sayılır', () => {
     const s = { ...two(), accepting: { rideId: A, timedOut: false } } as RideCtx;
-    expect(onRideTaken(s, A, NOW).patch).toEqual({});
+    expect(onRideTaken(s, A, 9, NOW).patch.requests).toBeUndefined();
   });
 
   it('kabulüm sürerken diğer çağrılarım kapanırsa sessizce kalkar (bildirim yok)', () => {
     const s = { ...two(), accepting: { rideId: A, timedOut: false } } as RideCtx;
-    const r = onRideTaken(s, B, NOW);
+    const r = onRideTaken(s, B, 9, NOW);
     expect(rid(r.patch.requests!)).toEqual([A]);
     expect(types(r.effects)).toEqual([]);
   });
@@ -189,13 +191,16 @@ describe('ride_taken', () => {
   it('reddi beklerken kapanırsa ret gönderilmez ve GERİ AL şeridi kalkar', () => {
     let s = two();
     s = apply(s, beginDecline(s, A, NOW + 5000));
-    const r = onRideTaken(s, A, NOW + 6000);
+    const r = onRideTaken(s, A, 9, NOW + 6000);
     expect(r.patch.pendingDecline).toBeNull();
     expect(types(r.effects)).toEqual(['cancelDeclineFlush']);
   });
 
-  it('bilinmeyen ride için hiçbir şey yapmaz', () => {
-    expect(onRideTaken(two(), C, NOW)).toEqual({ patch: {}, effects: [] });
+  it('bilinmeyen ride için yalnızca mezar taşı bırakır (liste/efekt yok)', () => {
+    const r = onRideTaken(two(), C, 9, NOW);
+    expect(r.effects).toEqual([]);
+    expect(r.patch.requests).toBeUndefined();
+
   });
 });
 
@@ -673,5 +678,99 @@ describe('denetim düzeltmeleri (3, 6, 7)', () => {
     expect(rid(r.patch.requests!)).toEqual([A]);
     expect(onDeclineAck(ctx({ server: 'offline' }), request, { ok: false, timeout: true }, NOW)).toEqual({ patch: {}, effects: [] });
     expect(onDeclineAck(ctx({ server: 'busy' }), request, { ok: false, code: 'INTERNAL' }, NOW)).toEqual({ patch: {}, effects: [] });
+  });
+});
+
+describe('ride_taken mezar taşı (version)', () => {
+  const withReq = () => apply(ctx(), onRideRequested(ctx(), req(A, 500, { version: 2 }), NOW));
+
+  it('kapanış sürümü rideVersions\'a işlenir; sıra dışı eski ride_requested yeniden eklemez', () => {
+    let s = withReq();
+    s = apply(s, onRideTaken(s, A, 5, NOW + 1));
+    expect(s.requests).toEqual([]);
+    expect(s.rideVersions[A]).toBe(5);
+    const late = onRideRequested(s, req(A, 500, { version: 2 }), NOW + 2);
+    expect(late.patch).toEqual({});
+    expect(late.effects).toEqual([]);
+  });
+
+  it('listede olmayan ride için de mezar taşı bırakılır', () => {
+    const r = onRideTaken(ctx(), C, 4, NOW);
+    expect(r.patch.rideVersions![C]).toBe(4);
+    expect(onRideRequested(apply(ctx(), r), req(C, 500, { version: 3 }), NOW).effects).toEqual([]);
+  });
+
+  it('düşük sürümlü ride_taken yok sayılır (çağrı kalır)', () => {
+    const s = apply(withReq(), { patch: { rideVersions: { [A]: 6 } }, effects: [] });
+    const r = onRideTaken(s, A, 5, NOW);
+    expect(r).toEqual({ patch: {}, effects: [] });
+  });
+
+  it('eski session_sync kapanmış çağrıyı geri getirmez', () => {
+    let s = withReq();
+    s = apply(s, onRideTaken(s, A, 5, NOW + 1));
+    const r = applyRideSync(s, { openRequests: [req(A, 500, { version: 2 })] }, NOW + 2);
+    expect(r.patch.requests).toEqual([]);
+  });
+
+  it('ride_cancelled (başka ride) kapanış sürümünü mezar taşı yapar', () => {
+    const s = withReq();
+    const r = onRideCancelled(s, { rideId: A, version: 7 }, NOW);
+    expect(r.patch.rideVersions![A]).toBe(7);
+    expect(r.patch.requests).toEqual([]);
+  });
+});
+
+describe('kabul ack presenceVersion', () => {
+  const pending = (p: Partial<RideCtx> = {}) => {
+    let s = ctx({ presenceVersion: 100, ...p });
+    s = apply(s, onRideRequested(s, req(A, 500), NOW));
+    return apply(s, { patch: { actionLockedUntil: 0 }, effects: [] });
+  };
+
+  it('ack presenceVersion\'ı ilerletir', () => {
+    const s = apply(pending(), beginAccept(pending(), A, NOW));
+    const r = onAcceptAck(s, A, { kind: 'ok', ride: snap(A), presenceVersion: 150 }, NOW);
+    expect(r.patch.presenceVersion).toBe(150);
+    expect(r.patch.activeRide?.rideId).toBe(A);
+  });
+
+  it('ack sonrası kabul öncesi üretilmiş eski sync presence kapısından geçemez', () => {
+    const s = apply(pending(), beginAccept(pending(), A, NOW));
+    const n = apply(s, onAcceptAck(s, A, { kind: 'ok', ride: snap(A), presenceVersion: 150 }, NOW));
+    expect(acceptPresenceVersion(n.presenceVersion, 120).accept).toBe(false);
+    expect(acceptPresenceVersion(n.presenceVersion, 150).accept).toBe(true);
+  });
+
+  it('elindeki sürümden eski ack yolculuğu benimsemez, sync ister', () => {
+    const s = { ...apply(pending(), beginAccept(pending(), A, NOW)), presenceVersion: 200 } as RideCtx;
+    const r = onAcceptAck(s, A, { kind: 'ok', ride: snap(A), presenceVersion: 150 }, NOW);
+    expect(r.patch.activeRide).toBeUndefined();
+    expect(r.patch.accepting).toBeNull();
+    expect(r.effects).toContainEqual({ type: 'requestSync' });
+  });
+
+  it('parseRideAcceptAck: presenceVersion zorunlu, snapshot ayrılır', () => {
+    const ok = parseRideAcceptAck({ ...snap(A), presenceVersion: 9 });
+    expect(ok?.presenceVersion).toBe(9);
+    expect(ok?.ride.rideId).toBe(A);
+    expect(ok?.ride).not.toHaveProperty('presenceVersion');
+    expect(parseRideAcceptAck(snap(A))).toBeNull();
+  });
+});
+
+describe('durak askıya alma (stand_suspended)', () => {
+  const active = ctx({ activeRide: snap(A), server: 'busy', rideVersions: { [A]: 3 } });
+
+  it('D3 askıya alma metni: sebep taşınmaz, ayrı yerel bildirim', () => {
+    const r = onRideCancelled(active, { rideId: A, reason: STAND_SUSPENDED_REASON, version: 4 }, NOW);
+    expect(r.patch.closed).toEqual({ kind: 'cancelled', shortCode: 'K7M2QX', standSuspended: true });
+    expect(r.effects).toContainEqual({ type: 'localNotify', text: T.ride.notif.standSuspended });
+    expect(T.ride.closed.standSuspended).toContain('Durak hizmet dışı');
+  });
+
+  it('serbest sebepli iptal eskisi gibi', () => {
+    const r = onRideCancelled(active, { rideId: A, reason: 'Vazgeçti', version: 4 }, NOW);
+    expect(r.patch.closed).toEqual({ kind: 'cancelled', shortCode: 'K7M2QX', reason: 'Vazgeçti' });
   });
 });

@@ -1,3 +1,4 @@
+import { STAND_SUSPENDED_REASON } from '@duraknet/shared';
 import { elapsedSince } from '../lib/clock';
 import { formatDistance, formatElapsed, formatElapsedA11y, formatPhone, formatRadiusKm, telHref } from '../lib/format';
 import { isTerminal, type RideView } from '../lib/rides';
@@ -141,7 +142,11 @@ export function RideCard({
       )}
 
       {ride.unknown && <p className="mt-2 text-lg font-semibold">{T.card.unknown}</p>}
-      {ride.status === 'cancelled' && ride.cancelReason && <p className="mt-2 text-lg">{T.card.reasonPrefix}{ride.cancelReason}</p>}
+      {ride.status === 'cancelled' && ride.cancelReason && (
+        <p className="mt-2 text-lg">
+          {ride.cancelReason === STAND_SUSPENDED_REASON ? T.card.standSuspended : `${T.card.reasonPrefix}${ride.cancelReason}`}
+        </p>
+      )}
 
       {!terminal && !(ride.status === 'searching' && ride.stillOpenMinutes !== undefined) && (
         <footer className="mt-4 flex flex-wrap items-center gap-6">

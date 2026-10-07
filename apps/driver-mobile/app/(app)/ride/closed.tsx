@@ -34,10 +34,17 @@ export default function ClosedScreen() {
 
   if (!closed) return <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} />;
 
-  const title = cancelled ? T.ride.closed.cancelledTitle : T.ride.closed.completedTitle;
-  const body = cancelled
-    ? T.ride.closed.cancelled
-    : closed.kind === 'completedByStand'
+  const suspended = closed.kind === 'cancelled' && closed.standSuspended === true;
+  const title = suspended
+    ? T.ride.closed.standSuspendedTitle
+    : cancelled
+      ? T.ride.closed.cancelledTitle
+      : T.ride.closed.completedTitle;
+  const body = suspended
+    ? T.ride.closed.standSuspended
+    : cancelled
+      ? T.ride.closed.cancelled
+      : closed.kind === 'completedByStand'
       ? T.ride.closed.completedByStand
       : T.ride.closed.completed;
 

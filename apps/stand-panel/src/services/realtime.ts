@@ -33,11 +33,11 @@ import {
   type RidesState,
 } from '../lib/rides';
 import { isErrorCode } from '../lib/api-result';
-import { afterRefresh, backoffMs } from '../lib/session-policy';
 import { T } from '../lib/texts';
 import { announce, noteAlert, pushToast, updateRides, useStore } from '../store';
 import { ACK_TIMEOUT_MS, API_URL } from './config';
 import { playSound } from './audio';
+import { createConnectionCore } from './connection-core';
 import { endSession, getAccessToken, onAuthed, onEnded, onToken, refreshAccess } from './session';
 
 const SYNC_WAIT_MS = 5_000;
@@ -45,13 +45,9 @@ const NEARBY_STALE_MS = 25_000;
 const PENDING_CREATE_TTL_MS = 60_000;
 
 let socket: Socket | null = null;
-let gotSyncSinceConnect = false;
-let syncWaitTimer: ReturnType<typeof setTimeout> | undefined;
 let detailTimer: ReturnType<typeof setTimeout> | undefined;
 let nearbyTimer: ReturnType<typeof setInterval> | undefined;
-let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let syncInflight = false;
-let reconnectAttempt = 0;
 /** Kullanıcıya zaten "durum değişti" denen ride'lar: bir sonraki senkronda "siz yokken kapandı" sayılmaz. */
 const quiet = new Set<string>();
 
@@ -76,42 +72,22 @@ export function emitAck<T = undefined>(event: string, payload: unknown): Promise
   });
 }
 
-/** Oturum hatası ack'leri (UNAUTHORIZED / ACCOUNT_*) oturum akışına yönlendirir. Ele alındıysa `true`. */
-export function handleAuthCode(code: ErrorCode | 'TIMEOUT' | 'NETWORK'): boolean {
-  if (code === 'ACCOUNT_SUSPENDED') return endSession(undefined, 'suspended'), true;
-  if (code === 'ACCOUNT_PENDING') return endSession(undefined, 'pending'), true;
-  if (code === 'UNAUTHORIZED') {
-    refreshThenConnect();
-    return true;
-  }
-  return false;
-}
+const core = createConnectionCore({
+  getSocket: () => socket,
+  refreshAccess,
+  endSession,
+  setConn: (conn) => useStore.getState().set({ conn }),
+  requestSync: (onFail) => requestSync(onFail),
+  syncWaitMs: SYNC_WAIT_MS,
+});
 
-/**
- * Access'i yenileyip socket'i yeniden bağlar. Ağ hatasında geri çekilmeyle tekrar dener (sessizce bırakmaz);
- * reddedilirse oturum zaten kapanmıştır. `auth_expired` için de kullanılır: başarılı yenileme `onToken` ile
- * `auth_refresh` gönderir, bağlı değilse burada bağlanır.
- */
-function refreshThenConnect(attempt = 1): void {
-  clearTimeout(reconnectTimer);
-  const s = socket;
-  if (!s) return;
-  void refreshAccess().then((o) => {
-    if (socket !== s) return;
-    const plan = afterRefresh(o, attempt);
-    if (plan.kind === 'connect') {
-      if (!s.connected) s.connect();
-    } else if (plan.kind === 'retry') {
-      reconnectTimer = setTimeout(() => refreshThenConnect(attempt + 1), plan.delayMs);
-    }
-  });
-}
+/** Oturum hatası ack'leri (UNAUTHORIZED / ACCOUNT_*) oturum akışına yönlendirir. Ele alındıysa `true`. */
+export const handleAuthCode = core.handleAuthCode;
 
 function handleSync(raw: unknown): void {
   const p = standSessionSyncSchema.safeParse(raw);
   if (!p.success) return;
-  gotSyncSinceConnect = true;
-  clearTimeout(syncWaitTimer);
+  core.onSync();
   const st = useStore.getState();
   const offset = computeClockOffset(p.data.serverTime, Date.now());
   if (offset !== st.clockOffset) st.set({ clockOffset: offset });
@@ -181,45 +157,10 @@ function rideEvent<S extends z.ZodType>(
 const codeOf = (rideId: string) => useStore.getState().ridesState.rides[rideId]?.shortCode ?? '';
 
 function bind(s: Socket): void {
-  s.on('connect', () => {
-    reconnectAttempt = 0;
-    gotSyncSinceConnect = false;
-    useStore.getState().set({ conn: 'connected' });
-    clearTimeout(syncWaitTimer);
-    // `session_sync` 5 sn içinde gelmezse E-5 ile iste; o da başarısızsa bağlantıyı yenile.
-    syncWaitTimer = setTimeout(() => {
-      if (!gotSyncSinceConnect) requestSync(() => socket?.disconnect().connect());
-    }, SYNC_WAIT_MS);
-  });
-
-  s.on('disconnect', (reason: string) => {
-    clearTimeout(syncWaitTimer);
-    useStore.getState().set({ conn: 'disconnected' });
-    if (reason === 'io server disconnect') {
-      // Sunucu kesti (askıya alma, token süresi...): önce oturumu doğrula, sonra yeniden bağlan.
-      refreshThenConnect();
-    }
-  });
-
-  s.on('connect_error', (err: Error & { data?: { code?: string } }) => {
-    useStore.getState().set({ conn: 'disconnected' });
-    const code = err.data?.code ?? err.message;
-    if (code === 'ACCOUNT_SUSPENDED') return endSession(undefined, 'suspended');
-    if (code === 'ACCOUNT_PENDING') return endSession(undefined, 'pending');
-    // Ara katman reddi (UNAUTHORIZED vb.) otomatik yeniden bağlanmayı durdurur: elle devam edilir.
-    if (!s.active) {
-      const attempt = ++reconnectAttempt;
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(() => {
-        if (code === 'UNAUTHORIZED') refreshThenConnect(attempt);
-        else if (socket === s) s.connect();
-      }, backoffMs(attempt));
-    }
-  });
-
-  s.on(COMMON_EVENTS.authExpired, () => {
-    refreshThenConnect(); // başarılı olunca onToken dinleyicisi `auth_refresh` gönderir; 'network' yeniden denenir
-  });
+  s.on('connect', core.onConnect);
+  s.on('disconnect', core.onDisconnect);
+  s.on('connect_error', core.onConnectError);
+  s.on(COMMON_EVENTS.authExpired, core.onAuthExpired);
 
   s.on(COMMON_EVENTS.sessionSync, handleSync);
 
@@ -302,9 +243,8 @@ function connect(): void {
 }
 
 function disconnect(): void {
-  clearTimeout(syncWaitTimer);
+  core.dispose();
   clearTimeout(detailTimer);
-  clearTimeout(reconnectTimer);
   clearInterval(nearbyTimer);
   quiet.clear();
   syncInflight = false;

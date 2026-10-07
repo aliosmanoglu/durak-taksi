@@ -2,7 +2,7 @@
 // alır, durum yamasını ve yan etkileri döndürür; yan etkileri servis katmanı (src/services/rides.ts) uygular.
 // Kurallar: ride içeren her olayda `version` kapısı (elindekinden düşük olan yok sayılır); `session_sync` ride
 // durumunu değiştirir (birleştirmez); kabul yalnızca sunucu ack'iyle kesinleşir (iyimser güncelleme yok).
-import type { ErrorCode, RideRequest, RideSnapshot } from '@duraknet/shared';
+import { STAND_SUSPENDED_REASON, type ErrorCode, type RideRequest, type RideSnapshot } from '@duraknet/shared';
 import {
   ACTION_LOCK_MS,
   CLOSED_TOAST_MS,
@@ -12,6 +12,7 @@ import {
 } from '../constants';
 import { formatDistance } from '../format';
 import type { Conn, PresenceState, ServerStatus } from '../presence/state';
+import { acceptPresenceVersion } from '../presence/transitions';
 import { isSessionEndingCode, sessionEndReasonOf, type SessionEndReason } from '../session-policy';
 import { T } from '../texts';
 import { clockOffset } from './clock';
@@ -19,10 +20,14 @@ import type { RideSyncParts } from './parse';
 import { sortRequests, type OpenRequest, type RideClosed, type RidesState } from './state';
 
 /** Geçişlerin okuduğu bağlam: ride durumu + yalnızca okunan varlık alanları. */
-export type RideCtx = RidesState & Pick<PresenceState, 'server' | 'conn' | 'syncPending' | 'tracking'>;
+export type RideCtx = RidesState & Pick<PresenceState, 'server' | 'conn' | 'syncPending' | 'tracking' | 'presenceVersion'>;
 
 /** Ride geçişlerinin yazabildiği alanlar (ride durumu + şoförün yerel `server` tahmini). */
-export type RidePatch = Partial<RidesState> & { server?: ServerStatus; wantsOnline?: boolean };
+export type RidePatch = Partial<RidesState> & {
+  server?: ServerStatus;
+  wantsOnline?: boolean;
+  presenceVersion?: number | null;
+};
 
 export type RideEffect =
   | { type: 'emitAccept'; rideId: string }
@@ -148,19 +153,26 @@ export function onRideRequested(s: RideCtx, req: RideRequest, now: number): Ride
   );
 }
 
-/** `ride_taken`: başkası aldı veya çağrı kapandı (durak iptali dahil). Kabul bekleyen çağrıda ack belirler. */
-export function onRideTaken(s: RideCtx, rideId: string, now: number): RideStep {
-  if (s.accepting?.rideId === rideId) return NOOP;
+/**
+ * `ride_taken`: başkası aldı veya çağrı kapandı (durak iptali / askıya alma dahil). Kabul bekleyen çağrıda ack belirler.
+ * `version` kapanış sürümüdür: düşük sürümlü olay yok sayılır; kapanış sürümü `rideVersions`'a işlenir (mezar taşı:
+ * sıra dışı gelen eski `ride_requested` / eski `session_sync` kapanmış çağrıyı yeniden eklemez).
+ */
+export function onRideTaken(s: RideCtx, rideId: string, version: number, now: number): RideStep {
+  if (isStale(s.rideVersions, rideId, version)) return NOOP;
+  const noted = noteVersion(s.rideVersions, rideId, version);
+  const vp: RidePatch = noted !== s.rideVersions ? { rideVersions: noted } : {};
+  if (s.accepting?.rideId === rideId) return step(vp);
   const pending = s.pendingDecline?.request.rideId === rideId;
   const inList = s.requests.find((r) => r.rideId === rideId);
   if (!inList) {
     // Reddi beklerken kapandı: ret gönderilmez, GERİ AL şeridi kalkar.
-    return pending ? step({ pendingDecline: null }, [{ type: 'cancelDeclineFlush' }]) : NOOP;
+    return pending ? step({ ...vp, pendingDecline: null }, [{ type: 'cancelDeclineFlush' }]) : step(vp);
   }
-  if (inList.taken) return NOOP; // zaten "başka şoföre gitti" kartı gösteriliyor
+  if (inList.taken) return step(vp); // zaten "başka şoföre gitti" kartı gösteriliyor
   // Kabulüm sürerken kazandığımda sunucu diğer açık çağrılarımı da kapatır: bildirim gösterilmez.
-  if (s.accepting) return step(withoutRequest(s, rideId, now));
-  return step(withoutRequest(s, rideId, now), [
+  if (s.accepting) return step({ ...vp, ...withoutRequest(s, rideId, now) });
+  return step({ ...vp, ...withoutRequest(s, rideId, now) }, [
     { type: 'stopRing' },
     { type: 'toast', text: T.ride.req.closedToast, ms: CLOSED_TOAST_MS },
   ]);
@@ -193,7 +205,8 @@ export function beginAccept(s: RideCtx, rideId: string, now: number): RideStep {
 }
 
 export type AcceptOutcome =
-  | { kind: 'ok'; ride: RideSnapshot }
+  /** `presenceVersion`: ack'in taşıdığı varlık sürümü (kabul öncesi eski session_sync'i eler). */
+  | { kind: 'ok'; ride: RideSnapshot; presenceVersion?: number }
   | { kind: 'error'; code: ErrorCode }
   | { kind: 'timeout' };
 
@@ -216,15 +229,19 @@ function adoptActiveRide(s: RideCtx, ride: RideSnapshot): RidePatch {
 
 export function onAcceptAck(s: RideCtx, rideId: string, r: AcceptOutcome, now: number): RideStep {
   if (r.kind === 'ok') {
+    // Kabul varlık sürümünü artırır: ack'ten daha yeni bir sync/ack zaten işlendiyse bu ack eskidir; sync belirler.
+    const pv = acceptPresenceVersion(s.presenceVersion, r.presenceVersion);
+    if (!pv.accept) return step({ accepting: null }, [{ type: 'requestSync' }]);
+    const pvPatch: RidePatch = pv.next !== s.presenceVersion ? { presenceVersion: pv.next } : {};
     const cur = s.activeRide;
     if (cur && cur.rideId === r.ride.rideId && cur.version > r.ride.version) {
-      return step({ accepting: null }); // ride_accepted event'i daha yeni sürümle zaten geldi
+      return step({ ...pvPatch, accepting: null }); // ride_accepted event'i daha yeni sürümle zaten geldi
     }
     // Ack'ten önce daha yeni bir olay (ör. durak iptali) işlendiyse eski ack yolculuğu diriltmez; sync belirler.
     if (isStale(s.rideVersions, r.ride.rideId, r.ride.version)) {
-      return step({ accepting: null }, [{ type: 'requestSync' }]);
+      return step({ ...pvPatch, accepting: null }, [{ type: 'requestSync' }]);
     }
-    return step(adoptActiveRide(s, r.ride), [
+    return step({ ...adoptActiveRide(s, r.ride), ...pvPatch }, [
       { type: 'cancelDeclineFlush' },
       { type: 'stopRing' },
       { type: 'haptic', kind: 'success' },
@@ -365,7 +382,14 @@ function closeActive(s: RideCtx, ride: RideSnapshot, version: number, closed: Ri
     },
     [
       { type: 'haptic', kind: cancelled ? 'warning' : 'success' },
-      ...(cancelled ? [{ type: 'localNotify', text: T.ride.notif.cancelled } as const] : []),
+      ...(cancelled
+        ? [
+            {
+              type: 'localNotify',
+              text: closed.kind === 'cancelled' && closed.standSuspended ? T.ride.notif.standSuspended : T.ride.notif.cancelled,
+            } as const,
+          ]
+        : []),
       { type: 'persistActiveRide', ride: null },
       { type: 'requestSync' },
     ],
@@ -378,13 +402,15 @@ export function onRideCancelled(s: RideCtx, ev: { rideId: string; reason?: strin
   const ride = s.activeRide;
   if (!ride || ride.rideId !== ev.rideId) {
     // Açık çağrı olarak görünüyorsa kapanmış sayılır; başka bir ride ise yalnızca sürüm not edilir.
-    const t = onRideTaken(s, ev.rideId, now);
+    const t = onRideTaken(s, ev.rideId, ev.version, now);
     return step({ ...t.patch, rideVersions: noteVersion(s.rideVersions, ev.rideId, ev.version) }, t.effects);
   }
+  // Durak askıya alındı: serbest metin sebep değil, sabit sebep; D3 ayrı metin gösterir.
+  const standSuspended = ev.reason === STAND_SUSPENDED_REASON;
   return closeActive(s, ride, ev.version, {
     kind: 'cancelled',
     shortCode: ride.shortCode,
-    ...(ev.reason ? { reason: ev.reason } : {}),
+    ...(standSuspended ? { standSuspended: true as const } : ev.reason ? { reason: ev.reason } : {}),
   });
 }
 

@@ -284,6 +284,8 @@ export const T = {
     closed: {
       cancelledTitle: 'Çağrı iptal edildi',
       cancelled: 'Durak çağrıyı iptal etti. Navigasyona gerek yok.',
+      standSuspendedTitle: 'Çağrı kapandı',
+      standSuspended: 'Durak hizmet dışı kaldığı için çağrı kapandı. Navigasyona gerek yok.',
       cancelledReason: (r: string) => `Sebep: ${r}`,
       completedTitle: 'Yolculuk tamamlandı',
       completedByStand: 'Durak yolculuğu tamamladı.',
@@ -297,6 +299,7 @@ export const T = {
     session: { suspendedWithRide: 'Hesabınız askıya alındı. Yolculuk başka şoföre aktarıldı. Durağınızla görüşün.' },
     notif: {
       cancelled: 'Durak çağrıyı iptal etti.',
+      standSuspended: 'Durak hizmet dışı kaldığı için çağrı kapandı.',
       suspended: 'Hesabınız askıya alındı. Yolculuk iptal edildi.',
     },
     a11y: { newRequest: (dist: string, addr: string) => `Yeni çağrı. ${dist}. ${addr}.`, newRequestMore: (n: number) => `Yeni çağrı daha. Toplam ${n}.` },

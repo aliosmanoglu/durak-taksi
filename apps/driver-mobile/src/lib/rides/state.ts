@@ -15,6 +15,8 @@ export type RideClosed = {
   kind: 'cancelled' | 'completedByStand' | 'completed';
   shortCode: string;
   reason?: string;
+  /** Durak askıya alındı (`reason: stand_suspended`): D3 sabit metni gösterir, `reason` taşınmaz. */
+  standSuspended?: true;
 };
 
 /** Eşleşmiş yolculukta süren kullanıcı eylemi. */

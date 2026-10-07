@@ -3,11 +3,12 @@
 // Event adları ve payload tipleri yalnızca `@duraknet/shared`'dandır.
 import { AccessibilityInfo } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { DRIVER_EVENTS, type RideCompletedEvent, type RideSnapshot } from '@duraknet/shared';
+import { DRIVER_EVENTS, type RideAcceptAck, type RideCompletedEvent } from '@duraknet/shared';
 import { log } from '@/lib/log';
 import { emitAck } from '@/lib/realtime';
 import {
   parseRideCancelled,
+  parseRideAcceptAck,
   parseRideCompleted,
   parseRideRequest,
   parseRideSnapshot,
@@ -141,12 +142,12 @@ function runEffect(e: RideEffect) {
 // Socket emit'leri (ack'li; 10 sn zaman aşımı = sonuç bilinmiyor)
 
 async function emitAccept(rideId: string) {
-  const r = await emitAck<RideSnapshot>(DRIVER_EVENTS.rideAccept, { rideId });
+  const r = await emitAck<RideAcceptAck>(DRIVER_EVENTS.rideAccept, { rideId });
   let outcome: AcceptOutcome;
   if (r.ok) {
     // Başarılı ack'in gövdesi bozuksa sonuç "bilinmiyor" sayılır; session_sync belirler.
-    const ride = parseRideSnapshot(r.data);
-    outcome = ride ? { kind: 'ok', ride } : { kind: 'timeout' };
+    const ack = parseRideAcceptAck(r.data);
+    outcome = ack ? { kind: 'ok', ride: ack.ride, presenceVersion: ack.presenceVersion } : { kind: 'timeout' };
   } else if ('timeout' in r) outcome = { kind: 'timeout' };
   else outcome = { kind: 'error', code: r.code };
   log('rides.accept', { result: outcome.kind === 'error' ? outcome.code : outcome.kind });
@@ -194,7 +195,7 @@ export function handleRideRequested(payload: unknown) {
 export function handleRideTaken(payload: unknown) {
   const ev = parseRideTaken(payload);
   if (!ev) return void log('rides.invalid', { event: 'ride_taken' });
-  run(onRideTaken(get(), ev.rideId, Date.now()));
+  run(onRideTaken(get(), ev.rideId, ev.version, Date.now()));
 }
 
 export function handleRideAccepted(payload: unknown) {

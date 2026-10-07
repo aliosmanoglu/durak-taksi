@@ -1,6 +1,7 @@
 // Sunucu → istemci ride payload'larının denetimi (S → C yönü; sözleşme şemaları `packages/shared`'dan).
 // Tanınmayan gövde `null` döner ve yok sayılır; hiçbir şey fırlatılmaz.
 import {
+  rideAcceptAckSchema,
   rideCancelledSchema,
   rideCompletedSchema,
   rideRequestSchema,
@@ -21,6 +22,14 @@ export const parseRideRequest = (p: unknown): RideRequest | null => {
 export const parseRideSnapshot = (p: unknown): RideSnapshot | null => {
   const r = rideSnapshotSchema.safeParse(p);
   return r.success ? r.data : null;
+};
+
+/** `ride_accept` ack gövdesi: RideSnapshot + presenceVersion. Geçersizse `null` (sonuç "bilinmiyor" sayılır). */
+export const parseRideAcceptAck = (p: unknown): { ride: RideSnapshot; presenceVersion: number } | null => {
+  const r = rideAcceptAckSchema.safeParse(p);
+  if (!r.success) return null;
+  const { presenceVersion, ...ride } = r.data;
+  return { ride, presenceVersion };
 };
 
 export const parseRideTaken = (p: unknown): RideTakenEvent | null => {
