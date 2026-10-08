@@ -77,8 +77,7 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
   // Ardından açık socket'ler kesilir ve şoför GEO'dan çıkarılır (sweeper'ı beklemeden aramalara girmesin).
   // Sıra: önce socket kesilir (yeni event gelmesin), sonra forceOffline. forceOffline hata verirse istek
   // 500 döner ama askıya alma PG'de commit edilmiştir; tekrar denemek idempotenttir.
-  r.post('/admin/drivers/:id/suspend', async (req, res) => {
-    const { id } = parseBody(idParam, req.params);
+  async function suspendDriver(id: string) {
     // Tek UPDATE: durum + token_version artar, push token silinir; eski token `account_suspended` bildirimi için döner.
     const res1 = await sql<{ id: string; status: 'suspended'; old_token: string | null }>`
       UPDATE drivers d
@@ -107,11 +106,15 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
     } finally {
       await presence?.forceOffline(id);
     }
-    res.json({ ok: true, data: row });
+    return row;
+  }
+
+  r.post('/admin/drivers/:id/suspend', async (req, res) => {
+    const { id } = parseBody(idParam, req.params);
+    res.json({ ok: true, data: await suspendDriver(id) });
   });
 
-  r.post('/admin/stands/:id/suspend', async (req, res) => {
-    const { id } = parseBody(idParam, req.params);
+  async function suspendStand(id: string) {
     const row = await deps.db
       .updateTable('stands')
       .set((eb) => ({ status: 'suspended', token_version: eb('token_version', '+', 1) }))
@@ -128,7 +131,67 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), standId: id }, 'durak askıya alma: açık çağrılar iptal edilemedi');
     }
-    res.json({ ok: true, data: row });
+    return row;
+  }
+
+  r.post('/admin/stands/:id/suspend', async (req, res) => {
+    const { id } = parseBody(idParam, req.params);
+    res.json({ ok: true, data: await suspendStand(id) });
+  });
+
+  // KVKK silme talebi (Faz 6): kişisel alanlar yer tutucuyla değiştirilir, hesap askıda kalır; ride kayıtları
+  // istatistik için durur. Önce askıya alma akışı çalışır (socket kesilir, açık ride'lar bırakılır, push token silinir),
+  // sonra alanlar boşaltılır. UNIQUE telefon/plaka için yer tutucu id'den türetilir (kolon uzunluklarına sığar:
+  // phone varchar(20), plate varchar(15)). İdempotent: tekrar çağrı aynı sonucu verir. Durak konumu (NOT NULL)
+  // işletme adresi sayıldığı için korunur. Loga kişisel veri yazılmaz.
+  r.post('/admin/drivers/:id/anonymize', async (req, res) => {
+    const { id } = parseBody(idParam, req.params);
+    await suspendDriver(id);
+    const hex = id.replace(/-/g, '');
+    const row = await deps.db
+      .updateTable('drivers')
+      .set((eb) => ({
+        full_name: 'Silinmiş kullanıcı',
+        phone: `del-${hex.slice(0, 16)}`,
+        plate: `DEL${hex.slice(0, 11)}`,
+        license_no: 'silindi',
+        vehicle_model: null,
+        vehicle_color: null,
+        push_token: null,
+        home_stand_id: null,
+        password_hash: 'anonymized',
+        status: 'suspended',
+        token_version: eb('token_version', '+', 1),
+      }))
+      .where('id', '=', id)
+      .returning(['id', 'status'])
+      .executeTakeFirst();
+    if (!row) throw errors.notFound();
+    log.info({ driverId: id }, 'şoför anonimleştirildi');
+    res.json({ ok: true, data: { id: row.id, status: row.status, anonymized: true } });
+  });
+
+  r.post('/admin/stands/:id/anonymize', async (req, res) => {
+    const { id } = parseBody(idParam, req.params);
+    await suspendStand(id);
+    const hex = id.replace(/-/g, '');
+    const row = await deps.db
+      .updateTable('stands')
+      .set((eb) => ({
+        name: 'Silinmiş durak',
+        phone: `del-${hex.slice(0, 16)}`,
+        address: null,
+        username: `deleted-${id}`,
+        password_hash: 'anonymized',
+        status: 'suspended',
+        token_version: eb('token_version', '+', 1),
+      }))
+      .where('id', '=', id)
+      .returning(['id', 'status'])
+      .executeTakeFirst();
+    if (!row) throw errors.notFound();
+    log.info({ standId: id }, 'durak anonimleştirildi');
+    res.json({ ok: true, data: { id: row.id, status: row.status, anonymized: true } });
   });
 
   return r;

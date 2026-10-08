@@ -34,6 +34,16 @@ import {
   rideDriverCancelSchema,
   rideAcceptSchema,
   ERROR_CODES,
+  reportQuerySchema,
+  dailyReportSchema,
+  consistencyReportSchema,
+  CONSISTENCY_KINDS,
+  REPORT_MAX_DAYS,
+  REPORT_TIMEZONE,
+  MATCH_TARGET_SECONDS,
+  KVKK_NOTICE_VERSION,
+  driverRegisterSchema,
+  standRegisterSchema,
 } from './index';
 
 const id = '0b5f2c9e-6f3a-4d0e-9a51-1d2b3c4d5e6f';
@@ -219,5 +229,67 @@ describe('Faz 5 sözleşmesi', () => {
     expect(RATE_LIMITS.events.ride_create).toEqual({ limit: 10, windowMs: 60_000 });
     expect(RATE_LIMITS.events.auth_refresh.limit).toBe(10);
     expect(redisKeys.eventRateLimit('ride_accept', 'd1')).toBe('dn:ratelimit:ev:ride_accept:d1');
+  });
+});
+
+describe('Faz 6 sözleşmesi', () => {
+  const sid = '0b0f3f0e-8f5a-4a5e-9a52-0c2d8f0b7d11';
+
+  it('reportQuerySchema: tarih biçimi, from <= to, isteğe bağlı uuid standId', () => {
+    expect(reportQuerySchema.safeParse({ from: '2031-03-10', to: '2031-03-10' }).success).toBe(true);
+    expect(reportQuerySchema.safeParse({ from: '2031-03-10', to: '2031-03-12', standId: sid }).success).toBe(true);
+    expect(reportQuerySchema.safeParse({ from: '2031-03-11', to: '2031-03-10' }).success).toBe(false);
+    expect(reportQuerySchema.safeParse({ from: '10.03.2031', to: '12.03.2031' }).success).toBe(false);
+    expect(reportQuerySchema.safeParse({ from: '2031-03-10' }).success).toBe(false);
+    expect(reportQuerySchema.safeParse({ from: '2031-03-10', to: '2031-03-11', standId: 'x' }).success).toBe(false);
+  });
+
+  const row = {
+    total: 3, matched: 2, completed: 2, cancelled: 1, open: 0,
+    matchRate: 2 / 3, avgMatchSeconds: 25, medianMatchSeconds: 25, p90MatchSeconds: 37, withinTargetRate: 1,
+  };
+  it('dailyReportSchema: geçerli raporu kabul eder; null oranlar serbest, aralık dışı oran ve yanlış saat dilimi reddedilir', () => {
+    const report = {
+      timezone: REPORT_TIMEZONE, targetSeconds: MATCH_TARGET_SECONDS, from: '2031-03-10', to: '2031-03-11',
+      days: [{ date: '2031-03-10', ...row }, { date: '2031-03-11', ...row, total: 0, matched: 0, completed: 0, cancelled: 0, matchRate: null, avgMatchSeconds: null, medianMatchSeconds: null, p90MatchSeconds: null, withinTargetRate: null }],
+      totals: row,
+    };
+    expect(dailyReportSchema.safeParse(report).success).toBe(true);
+    expect(dailyReportSchema.safeParse({ ...report, timezone: 'UTC' }).success).toBe(false);
+    expect(dailyReportSchema.safeParse({ ...report, targetSeconds: 30 }).success).toBe(false);
+    expect(dailyReportSchema.safeParse({ ...report, totals: { ...row, matchRate: 1.2 } }).success).toBe(false);
+    expect(dailyReportSchema.safeParse({ ...report, totals: { ...row, total: -1 } }).success).toBe(false);
+    expect(dailyReportSchema.safeParse({ ...report, days: [{ date: '2031-03-10', ...row, total: 1.5 }] }).success).toBe(false);
+  });
+
+  it('consistencyReportSchema: bilinen kind kabul, bilinmeyen kind reddedilir', () => {
+    expect(CONSISTENCY_KINDS).toEqual(['pg_open_redis_missing', 'status_mismatch', 'driver_mismatch', 'stale_created', 'redis_open_pg_closed']);
+    const issue = { rideId: sid, shortCode: 'ab12cd34', kind: 'status_mismatch', pgStatus: 'searching', redisStatus: 'matched', ageSeconds: 12 };
+    const rep = { checkedAt: '2031-03-10T10:00:00.000Z', openRides: 1, issues: [issue, { ...issue, kind: 'pg_open_redis_missing', redisStatus: null }] };
+    expect(consistencyReportSchema.safeParse(rep).success).toBe(true);
+    expect(consistencyReportSchema.safeParse({ ...rep, issues: [{ ...issue, kind: 'baska' }] }).success).toBe(false);
+    expect(consistencyReportSchema.safeParse({ ...rep, issues: [{ ...issue, rideId: 'x' }] }).success).toBe(false);
+    expect(consistencyReportSchema.safeParse({ ...rep, issues: [{ ...issue, ageSeconds: -1 }] }).success).toBe(false);
+    expect(consistencyReportSchema.safeParse({ ...rep, issues: [] }).success).toBe(true);
+  });
+
+  it('sabitler', () => {
+    expect(REPORT_TIMEZONE).toBe('Europe/Istanbul');
+    expect(MATCH_TARGET_SECONDS).toBe(60);
+    expect(REPORT_MAX_DAYS).toBe(92);
+    expect(KVKK_NOTICE_VERSION).toMatch(/\S/);
+  });
+
+  it('kayıt şemaları kvkkAccepted: true ister', () => {
+    const driver = { fullName: 'Ali Veli', phone: '0532 123 45 67', password: 'gizli-sifre-123', plate: '34 ABC 123', licenseNo: 'RUHSAT-1' };
+    expect(driverRegisterSchema.safeParse({ ...driver, kvkkAccepted: true }).success).toBe(true);
+    for (const bad of [undefined, false, 'true', 1, null]) {
+      expect(driverRegisterSchema.safeParse({ ...driver, kvkkAccepted: bad }).success, String(bad)).toBe(false);
+    }
+    const stand = { name: 'Taksim Durağı', phone: '0532 123 45 67', location: pt, username: 'taksim', password: 'gizli-sifre-123' };
+    expect(standRegisterSchema.safeParse({ ...stand, kvkkAccepted: true }).success).toBe(true);
+    for (const bad of [undefined, false, 'true', 0, null]) {
+      expect(standRegisterSchema.safeParse({ ...stand, kvkkAccepted: bad }).success, String(bad)).toBe(false);
+    }
   });
 });

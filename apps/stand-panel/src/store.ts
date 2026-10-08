@@ -27,6 +27,8 @@ export type PanelState = {
   /** Giriş ekranında gösterilecek bilgi şeridi (oturum sona erdi vb.). */
   loginNotice: string | null;
   me: Me | null;
+  /** Oturumun rolü; yönetici panelde yalnızca rapor ekranını görür (socket bağlanmaz). */
+  role: 'stand' | 'admin' | null;
   conn: ConnState;
   ridesState: RidesState;
   /** Eşleşmiş ride'ların araç konumu (rideId → konum); ride matched'tan çıkınca silinir. */
@@ -57,6 +59,7 @@ export const useStore = create<PanelState>((set) => ({
   blockedKind: null,
   loginNotice: null,
   me: null,
+  role: null,
   conn: 'connecting',
   ridesState: initialRidesState(),
   driverLocs: initialDriverLocs(),
@@ -117,6 +120,7 @@ export function noteAlert(): void {
 export function resetSessionState(): void {
   useStore.getState().set({
     me: null,
+    role: null,
     conn: 'connecting',
     ridesState: initialRidesState(),
     driverLocs: initialDriverLocs(),

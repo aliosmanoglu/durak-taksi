@@ -87,6 +87,8 @@ const app = createApp({
   metrics,
   ...(config.METRICS_TOKEN ? { metricsToken: config.METRICS_TOKEN } : {}),
   metricsAllowAnon: config.METRICS_ALLOW_ANON,
+  redis,
+  staleCreatedAgeS: config.RECONCILE_ORPHAN_AGE_S,
   isShuttingDown: () => lifecycle.isShuttingDown(),
   ...(pushNotifier ? { pushNotifier } : {}),
   readinessChecks: [

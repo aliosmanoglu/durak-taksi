@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import type { Store } from 'express-rate-limit';
+import type { Redis } from 'ioredis';
 import helmet from 'helmet';
 import pino, { type Logger } from 'pino';
 import { adminRoutes } from './admin/routes';
@@ -10,6 +11,7 @@ import type { AuthDeps } from './auth/service';
 import { errorHandler } from './http/errors';
 import { apiMetrics, metricsHandler, type ApiMetrics } from './metrics';
 import type { PresenceService } from './presence/service';
+import { reportRoutes } from './reports/routes';
 import { pushTokenRoutes } from './push/routes';
 import type { PushNotifier } from './push/notifier';
 import { createRestLimiters, resolveRateLimits, type RateLimitOverrides } from './rate-limits';
@@ -45,6 +47,10 @@ type BaseAppOptions = {
   isShuttingDown?: () => boolean;
   /** Şoför askıya alınınca `account_suspended` push job'ı atar (yoksa bildirim gönderilmez). */
   pushNotifier?: PushNotifier;
+  /** Faz 6 tutarlılık raporu (salt okunur) için Redis; verilmezse `/admin/reports/consistency` eklenmez. */
+  redis?: Redis;
+  /** `stale_created` eşiği (sn); worker RECONCILE_ORPHAN_AGE_S ile aynı olmalı. Varsayılan 60. */
+  staleCreatedAgeS?: number;
 };
 
 /**
@@ -114,6 +120,7 @@ export function createApp(opts: AppOptions = {}) {
     const realtime = opts.realtime ?? noopRealtime;
     app.use(authRoutes(opts.auth, opts.authLimiters ?? createAuthLimiters(), realtime, opts.presence ?? undefined));
     app.use(adminRoutes(opts.auth, realtime, opts.presence ?? undefined, opts.rides ?? undefined, log, opts.pushNotifier));
+    app.use(reportRoutes(opts.auth, opts.redis, opts.staleCreatedAgeS ?? 60));
     app.use(standRoutes(opts.auth));
     app.use(pushTokenRoutes(opts.auth, limiters.pushToken));
   }

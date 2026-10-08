@@ -89,17 +89,24 @@ export function refreshAccess(): Promise<RefreshOutcome> {
   return inflight;
 }
 
-async function fetchMe(): Promise<Me | 'network' | 'rejected'> {
+type Who = Me | { role: 'admin' };
+
+async function fetchMe(): Promise<Who | 'network' | 'rejected'> {
   if (!access) return 'network';
-  const res = await api<Me>('GET', '/me', { token: access });
-  if (res.ok) return res.data.role === 'stand' ? res.data : 'rejected';
+  const res = await api<Who | { role: 'driver' }>('GET', '/me', { token: access });
+  if (res.ok) return res.data.role === 'stand' || res.data.role === 'admin' ? res.data : 'rejected';
   if (res.kind === 'network') return 'network';
   return res.code === 'UNAUTHORIZED' || res.code === 'FORBIDDEN' ? 'rejected' : 'network';
 }
 
-function startAuthed(me: Me) {
-  saveMe(me);
-  useStore.getState().set({ auth: 'authed', me, blockedKind: null, loginNotice: null });
+function startAuthed(who: Who) {
+  if (who.role === 'admin') {
+    // Yönetici: çağrı soketi açılmaz, durak verisi yok; yalnızca rapor ekranı.
+    useStore.getState().set({ auth: 'authed', role: 'admin', me: null, blockedKind: null, loginNotice: null });
+    return;
+  }
+  saveMe(who);
+  useStore.getState().set({ auth: 'authed', role: 'stand', me: who, blockedKind: null, loginNotice: null });
   authedListeners.forEach((cb) => cb());
 }
 
@@ -124,7 +131,7 @@ export async function boot(): Promise<void> {
     return;
   }
   // Ağ yok: son bilinen ekran, "Bağlantı yok" şeridi; girişe atılmaz. Bağlantı gelince devam edilir.
-  useStore.getState().set({ auth: 'authed', me: cached, conn: 'disconnected' });
+  useStore.getState().set({ auth: 'authed', role: 'stand', me: cached, conn: 'disconnected' });
   void retryBootLoop(1);
 }
 
@@ -146,9 +153,9 @@ export function retryBoot(): Promise<void> {
   return boot();
 }
 
-export async function login(username: string, password: string): Promise<LoginOutcome> {
+export async function login(username: string, password: string, role: 'stand' | 'admin' = 'stand'): Promise<LoginOutcome> {
   const res = await api<LoginResult>('POST', '/auth/login', {
-    body: { role: 'stand', username: username.trim(), password },
+    body: { role, username: username.trim(), password },
   });
   if (!res.ok) {
     if (res.kind === 'network') return { kind: 'network' };
@@ -189,6 +196,11 @@ export type LogoutOutcome = { ok: true } | { ok: false; kind: 'network' | 'serve
 
 /** Tüm cihazlardan çıkış (`POST /auth/logout`). Ağ hatasında oturum AÇIK kalır; kullanıcı tekrar dener. */
 export async function logout(): Promise<LogoutOutcome> {
+  if (useStore.getState().role === 'admin') {
+    // Yönetici oturumu sunucuda iptal edilemez (ADMIN_TOKEN_VERSION); yalnızca bu cihazdan çıkılır.
+    endSession();
+    return { ok: true };
+  }
   if (!access) {
     const out = await refreshAccess();
     if (out === 'rejected') return { ok: true }; // oturum zaten kapandı

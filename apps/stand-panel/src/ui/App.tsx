@@ -6,9 +6,11 @@ import { retryBoot } from '../services/session';
 import { keepScreenAwake } from '../services/wakelock';
 import { serverNow } from '../services/realtime';
 import { updateRides, useStore } from '../store';
+import { AdminPage } from './AdminPage';
 import { HomePage } from './HomePage';
 import { LoginPage } from './LoginPage';
 import { PendingPage } from './PendingPage';
+import { RegisterPage } from './RegisterPage';
 import { useNow } from './hooks';
 import { Button, Toasts } from './kit';
 
@@ -64,6 +66,7 @@ function Splash({ failed }: { failed?: boolean }) {
 export function App() {
   const auth = useStore((s) => s.auth);
   const authed = auth === 'authed';
+  const role = useStore((s) => s.role);
 
   let body;
   if (auth === 'booting') body = <Splash />;
@@ -72,8 +75,9 @@ export function App() {
     body = (
       <Routes>
         <Route path="/login" element={auth === 'authed' ? <Navigate to="/" replace /> : auth === 'blocked' ? <Navigate to="/pending" replace /> : <LoginPage />} />
+        <Route path="/register" element={auth === 'anon' ? <RegisterPage /> : <Navigate to={auth === 'authed' ? '/' : auth === 'blocked' ? '/pending' : '/login'} replace />} />
         <Route path="/pending" element={auth === 'blocked' ? <PendingPage /> : <Navigate to={auth === 'authed' ? '/' : '/login'} replace />} />
-        <Route path="*" element={authed ? <HomePage /> : <Navigate to={auth === 'blocked' ? '/pending' : '/login'} replace />} />
+        <Route path="*" element={authed ? (role === 'admin' ? <AdminPage /> : <HomePage />) : <Navigate to={auth === 'blocked' ? '/pending' : '/login'} replace />} />
       </Routes>
     );
   }

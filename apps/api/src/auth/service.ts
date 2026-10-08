@@ -1,3 +1,4 @@
+import { KVKK_NOTICE_VERSION } from '@duraknet/shared';
 import type {
   AccountStatus,
   AuthTokens,
@@ -57,6 +58,8 @@ export async function registerDriver(deps: AuthDeps, input: DriverRegisterInput)
         vehicle_model: input.vehicleModel ?? null,
         vehicle_color: input.vehicleColor ?? null,
         home_stand_id: input.homeStandId ?? null,
+        kvkk_accepted_at: new Date(),
+        kvkk_version: KVKK_NOTICE_VERSION,
       })
       .returning(['id', 'status'])
       .executeTakeFirstOrThrow();
@@ -78,6 +81,8 @@ export async function registerStand(deps: AuthDeps, input: StandRegisterInput) {
         location: toGeography(input.location),
         username: input.username,
         password_hash: await hashPassword(input.password),
+        kvkk_accepted_at: new Date(),
+        kvkk_version: KVKK_NOTICE_VERSION,
       })
       .returning(['id', 'status'])
       .executeTakeFirstOrThrow();

@@ -37,6 +37,9 @@ const envSchema = z.object({
   // Kapanış: LB'nin node'u çıkarması için bekleme ve zorla çıkış süresi (ms).
   SHUTDOWN_DRAIN_MS: z.coerce.number().int().nonnegative().default(5000),
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  // ===== Faz 6 =====
+  // Tutarlılık raporunda `stale_created` eşiği (sn); worker RECONCILE_ORPHAN_AGE_S ile aynı değer olmalı.
+  RECONCILE_ORPHAN_AGE_S: z.coerce.number().positive().default(60),
   // Hız sınırları (istek sayısı); pencere süreleri `RATE_LIMITS`'te sabittir. Boşsa varsayılan.
   RATE_LIMIT_REST_IP_PER_MIN: optionalLimit,
   RATE_LIMIT_REST_ACCOUNT_PER_MIN: optionalLimit,
