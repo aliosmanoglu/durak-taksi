@@ -10,6 +10,7 @@ import {
   type NavDecision,
   type NavOpenResult,
 } from '@/lib/navigation';
+import { cancelNavigationMark, markNavigationLaunched } from './lifecycle';
 import { storage } from './storage';
 
 const platform = () => (Platform.OS === 'ios' ? 'ios' : 'android');
@@ -26,7 +27,13 @@ export async function planNavigation(pickup: LatLng): Promise<NavDecision> {
 /** Seçilen uygulamayı (ya da hiçbiri verilmezse web fallback'i) açar. `makeDefault`: seçimi kaydeder. */
 export async function launchNavigation(pickup: LatLng, app?: NavApp, makeDefault = false): Promise<NavOpenResult> {
   if (app && makeDefault) await storage.setNavDefault(app.id);
-  return openNavigation(pickup, app, Linking);
+  // Dönüşte ride ekranı session_sync_request ile sunucudaki duruma göre geri yüklenir (lifecycle.ts).
+  markNavigationLaunched();
+  const res = await openNavigation(pickup, app, Linking);
+  if (res === 'failed') cancelNavigationMark();
+  return res;
 }
 
 export const resetNavDefault = () => storage.setNavDefault(null);
+export const readNavDefault = () => storage.getNavDefault();
+export const navPlatform = platform;

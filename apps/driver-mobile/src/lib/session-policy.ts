@@ -85,3 +85,32 @@ export function sessionEndReasonOf(code: ErrorCode): SessionEndReason {
   if (code === 'ACCOUNT_PENDING') return 'pending';
   return 'loggedOutElsewhere';
 }
+
+/**
+ * Ön plana dönüşte `session_sync_request` gerekir mi? Arka planda `thresholdMs`'den uzun kalındıysa evet.
+ * Harici navigasyondan dönüş (`navigationLaunched`) süre ne olursa olsun yeniden eşitler: ride ekranı
+ * sunucudaki gerçek duruma (ör. durak iptal etti / tamamladı) göre geri yüklenir.
+ */
+export function shouldResyncOnForeground(awayMs: number, navigationLaunched: boolean, thresholdMs: number): boolean {
+  return navigationLaunched || awayMs > thresholdMs;
+}
+
+/** Navigasyon bayrağı bu süreden sonra geçersizdir (dönüş hiç gelmediyse bayat bayrak kalmasın). */
+export const NAV_FLAG_MAX_AGE_MS = 120_000;
+
+/**
+ * Ön plana dönüşte navigasyon bayrağının kaderi. Sahte `inactive -> active` geçişleri (iOS "Aç?" uyarısı,
+ * Android uygulama seçicisi) bayrağı tüketmemeli: yalnızca `background` görüldükten sonraki `active` tüketir.
+ * - `none`: bayrak yok ya da süresi doldu (bayrak temizlenir)
+ * - `keep`: arka plan henüz görülmedi; bayrak korunur, eşitleme yok
+ * - `resync`: gerçek dönüş; bayrak tüketilir, eşitleme gerekir
+ */
+export function navigationFlagOnForeground(
+  launchedAt: number | null,
+  nowMs: number,
+  sawBackground: boolean,
+  maxAgeMs: number = NAV_FLAG_MAX_AGE_MS,
+): 'none' | 'keep' | 'resync' {
+  if (launchedAt == null || nowMs - launchedAt > maxAgeMs) return 'none';
+  return sawBackground ? 'resync' : 'keep';
+}

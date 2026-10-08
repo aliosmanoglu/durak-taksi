@@ -77,7 +77,12 @@ export const T = {
       internal: 'Çağrı oluşturulamadı. Tekrar deneyin.',
     },
   },
-  map: { tilesFailed: 'Harita yüklenemedi. Adresi yazın.', pickupPin: 'Alış noktası', dropoffPin: 'Varış noktası' },
+  map: {
+    vehicleStale: 'konum eski',
+    tilesFailed: 'Harita yüklenemedi. Adresi yazın.',
+    pickupPin: 'Alış noktası',
+    dropoffPin: 'Varış noktası',
+  },
   list: {
     title: 'AÇIK ÇAĞRILAR',
     empty: 'Açık çağrı yok. Soldan çağrı oluşturun.',
@@ -113,6 +118,9 @@ export const T = {
     complete: 'TAMAMLANDI',
     cancel: 'İPTAL ET',
     matchedDistance: (d: string) => `${d} uzakta (eşleşme anında)`,
+    lastLocation: (sec: number) => (sec < 5 ? 'Son konum: şimdi' : `Son konum: ${sec} sn önce`),
+    noLocation: 'Araç konumu bekleniyor',
+    locationStale: 'Konum eski, araç sinyali kaybolmuş olabilir',
     matchedSince: (e: string) => `Eşleşeli ${e}`,
     details: 'Çağrı ayrıntıları alınıyor…',
   },

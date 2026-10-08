@@ -5,7 +5,10 @@ import {
   decideConnectError,
   decideRefresh,
   isSessionEndingCode,
+  NAV_FLAG_MAX_AGE_MS,
+  navigationFlagOnForeground,
   proactiveRefreshDelayMs,
+  shouldResyncOnForeground,
 } from './session-policy';
 
 const headers = (h: Record<string, string>) => ({ get: (n: string) => h[n.toLowerCase()] ?? null });
@@ -74,5 +77,31 @@ describe('connect_error kararı', () => {
     expect(isSessionEndingCode('UNAUTHORIZED')).toBe(true);
     expect(isSessionEndingCode('ACCOUNT_SUSPENDED')).toBe(true);
     expect(isSessionEndingCode('INTERNAL')).toBe(false);
+  });
+});
+
+describe('shouldResyncOnForeground', () => {
+  it('kısa arka plan: eşitleme yok; eşik aşılırsa var', () => {
+    expect(shouldResyncOnForeground(5_000, false, 30_000)).toBe(false);
+    expect(shouldResyncOnForeground(30_000, false, 30_000)).toBe(false);
+    expect(shouldResyncOnForeground(30_001, false, 30_000)).toBe(true);
+  });
+  it('navigasyondan dönüş süreden bağımsız eşitler', () => {
+    expect(shouldResyncOnForeground(0, true, 30_000)).toBe(true);
+    expect(shouldResyncOnForeground(3_000, true, 30_000)).toBe(true);
+  });
+});
+
+describe('navigationFlagOnForeground', () => {
+  it('bayrak yoksa veya süresi dolduysa none', () => {
+    expect(navigationFlagOnForeground(null, 1_000, true)).toBe('none');
+    expect(navigationFlagOnForeground(0, NAV_FLAG_MAX_AGE_MS + 1, true)).toBe('none');
+  });
+  it('arka plan görülmeden active (sahte geçiş) bayrağı korur', () => {
+    expect(navigationFlagOnForeground(0, 5_000, false)).toBe('keep');
+  });
+  it('arka plan görüldükten sonraki active eşitler', () => {
+    expect(navigationFlagOnForeground(0, 5_000, true)).toBe('resync');
+    expect(navigationFlagOnForeground(0, NAV_FLAG_MAX_AGE_MS, true)).toBe('resync');
   });
 });

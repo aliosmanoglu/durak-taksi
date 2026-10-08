@@ -12,6 +12,7 @@ import type { Me } from '../services/types';
 import { useStore } from '../store';
 import { useNow } from './hooks';
 import { Banner, Button, Chip } from './kit';
+import { mapVehicles } from '../lib/driver-locations';
 import { PickMap, type MapTarget } from './PickMap';
 
 const REVERSE_TIMEOUT_MS = 4_000;
@@ -30,6 +31,7 @@ export function NewRideForm({ me }: { me: Me }) {
   const conn = useStore((s) => s.conn);
   const ridesState = useStore((s) => s.ridesState);
   const nearby = useStore((s) => s.nearby);
+  const driverLocs = useStore((s) => s.driverLocs);
   const lockUntil = useStore((s) => s.createLockUntil);
   const recent = useStore((s) => s.recent);
   const now = useNow();
@@ -242,6 +244,7 @@ export function NewRideForm({ me }: { me: Me }) {
         standLocation={me.location}
         maxRadiusM={me.maxRadiusM}
         drivers={nearby?.drivers ?? []}
+        vehicles={mapVehicles(driverLocs, ridesState, now)}
         target={target}
         mode={mode}
         pickup={pin}

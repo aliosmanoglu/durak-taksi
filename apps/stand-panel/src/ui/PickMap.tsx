@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import L from 'leaflet';
 import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import type { LatLng } from '@duraknet/shared';
+import type { MapVehicle } from '../lib/driver-locations';
 import { distanceMeters } from '../lib/geo';
 import { T } from '../lib/texts';
 import { TILE_ATTRIBUTION, TILE_URL } from '../services/config';
@@ -15,6 +16,30 @@ const taxiIcon = svgIcon(
   '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="2" y="9" width="20" height="9" rx="3" fill="#facc15" stroke="#1e293b" stroke-width="1.5"/><rect x="8" y="5" width="8" height="4" rx="1" fill="#1e293b"/><circle cx="7" cy="18" r="2.2" fill="#1e293b"/><circle cx="17" cy="18" r="2.2" fill="#1e293b"/></svg>',
   28,
 );
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** Eşleşen araç: yeşil taksi + plaka etiketi; konum eskiyse soluk ve "!" işaretli. */
+const vehicleIcons = new Map<string, L.DivIcon>();
+/** plaka + eski/taze başına tek ikon (saniyede bir yeniden çizimde yeni divIcon üretilmez). */
+const vehicleIcon = (plate: string, stale: boolean): L.DivIcon => {
+  const key = plate + (stale ? '|s' : '|f');
+  let icon = vehicleIcons.get(key);
+  if (!icon) {
+    icon = makeVehicleIcon(plate, stale);
+    if (vehicleIcons.size > 200) vehicleIcons.clear();
+    vehicleIcons.set(key, icon);
+  }
+  return icon;
+};
+const makeVehicleIcon = (plate: string, stale: boolean) =>
+  L.divIcon({
+    className: '',
+    iconSize: [96, 48],
+    iconAnchor: [48, 36],
+    html:
+      `<div style="display:flex;flex-direction:column;align-items:center;opacity:${stale ? 0.45 : 1}">` +
+      `<span style="background:#065f46;color:#fff;font:700 12px monospace;padding:1px 6px;border-radius:6px;white-space:nowrap">${escapeHtml(plate)}${stale ? ' !' : ''}</span>` +
+      '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="2" y="9" width="20" height="9" rx="3" fill="#10b981" stroke="#064e3b" stroke-width="1.5"/><rect x="8" y="5" width="8" height="4" rx="1" fill="#064e3b"/><circle cx="7" cy="18" r="2.2" fill="#064e3b"/><circle cx="17" cy="18" r="2.2" fill="#064e3b"/></svg></div>',
+  });
 const standIcon = svgIcon(
   '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#0f766e" stroke="#fff" stroke-width="2"/><text x="12" y="16.5" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" font-family="sans-serif">D</text></svg>',
   30,
@@ -71,6 +96,7 @@ export function PickMap({
   standLocation,
   maxRadiusM,
   drivers,
+  vehicles = [],
   target,
   mode,
   pickup,
@@ -82,6 +108,8 @@ export function PickMap({
   standLocation: LatLng;
   maxRadiusM: number;
   drivers: { id: string; location: LatLng }[];
+  /** Eşleşmiş (matched) ride'ların araçları: yakındaki araçlardan ayrı renk + plaka etiketi. */
+  vehicles?: MapVehicle[];
   target: MapTarget | null;
   mode: 'pickup' | 'dropoff';
   /** Dropoff modunda sabit gösterilen alış işareti. */
@@ -111,6 +139,15 @@ export function PickMap({
         />
         {drivers.map((d) => (
           <Marker key={d.id} position={[d.location.lat, d.location.lng]} icon={taxiIcon} interactive={false} />
+        ))}
+        {vehicles.map((v) => (
+          <Marker
+            key={v.rideId}
+            position={[v.location.lat, v.location.lng]}
+            icon={vehicleIcon(v.plate, v.stale)}
+            zIndexOffset={500}
+            interactive={false}
+          />
         ))}
         {mode === 'dropoff' && pickup && <Marker position={[pickup.lat, pickup.lng]} icon={pickupIcon} interactive={false} />}
         {mode === 'pickup' && dropoff && <Marker position={[dropoff.lat, dropoff.lng]} icon={dropoffIcon} interactive={false} />}

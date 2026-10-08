@@ -93,3 +93,9 @@ export function decideNavigation(installed: readonly NavApp[], defaultId: string
 /** Kayıtlı varsayılan kimliği geçerli mi (bilinmeyen değer yok sayılır). */
 export const isNavAppId = (v: unknown): v is NavAppId =>
   v === 'google' || v === 'yandexnavi' || v === 'yandexmaps' || v === 'apple';
+
+/** Kayıtlı varsayılanın ekranda gösterilecek adı (Hesap > Harita uygulaması); yoksa/bu platformda yoksa `null`. */
+export function navAppLabel(id: NavAppId | null, platform: NavPlatform): string | null {
+  if (!id) return null;
+  return navApps(platform).find((a) => a.id === id)?.label ?? null;
+}

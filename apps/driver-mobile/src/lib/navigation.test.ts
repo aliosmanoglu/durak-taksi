@@ -4,6 +4,7 @@ import {
   fallbackUrl,
   getInstalledNavApps,
   isNavAppId,
+  navAppLabel,
   navApps,
   openNavigation,
 } from './navigation';
@@ -98,5 +99,48 @@ describe('açma', () => {
   it('uygulama verilmezse doğrudan fallback; o da açılmazsa failed', async () => {
     expect(await openNavigation(P, undefined, { openURL: async () => {} })).toBe('fallback');
     expect(await openNavigation(P, undefined, { openURL: async () => { throw new Error('x'); } })).toBe('failed');
+  });
+});
+
+describe('web fallback koruması (uçtan uca akış)', () => {
+  async function run(canOpenURL: (u: string) => Promise<boolean>, platform: 'android' | 'ios', savedDefault: string | null = null) {
+    const opened: string[] = [];
+    const installed = await getInstalledNavApps(P, platform, { canOpenURL });
+    const decision = decideNavigation(installed, savedDefault);
+    const app = decision.kind === 'open' ? decision.app : undefined;
+    const result = await openNavigation(P, app, { openURL: async (u) => void opened.push(u) });
+    return { decision, result, opened };
+  }
+
+  it('canOpenURL hepsi false → web fallback açılır (Android ve iOS)', async () => {
+    for (const platform of ['android', 'ios'] as const) {
+      const r = await run(async () => false, platform);
+      expect(r.decision).toEqual({ kind: 'fallback' });
+      expect(r.result).toBe('fallback');
+      expect(r.opened).toEqual([fallbackUrl(P)]);
+    }
+  });
+
+  it('canOpenURL hepsi hata verirse de web fallback açılır', async () => {
+    const r = await run(async () => { throw new Error('izin yok'); }, 'ios');
+    expect(r.decision).toEqual({ kind: 'fallback' });
+    expect(r.opened).toEqual([fallbackUrl(P)]);
+  });
+
+  it('kayıtlı varsayılan artık yüklü değilse (silinmiş) fallback; yüklüyse doğrudan app', async () => {
+    const none = await run(async () => false, 'android', 'yandexnavi');
+    expect(none.opened).toEqual([fallbackUrl(P)]);
+    const has = await run(async (u) => u.startsWith('yandexnavi') || u.startsWith('google'), 'android', 'yandexnavi');
+    expect(has.result).toBe('app');
+    expect(has.opened[0]).toMatch(/^yandexnavi:/);
+  });
+});
+
+describe('varsayılan tercih etiketi', () => {
+  it('kayıtlı kimliğin etiketini verir; bilinmeyen/yüklü olmayan platformda null', () => {
+    expect(navAppLabel('yandexnavi', 'android')).toBe('Yandex Navigasyon');
+    expect(navAppLabel('apple', 'ios')).toBe('Apple Haritalar');
+    expect(navAppLabel('apple', 'android')).toBeNull();
+    expect(navAppLabel(null, 'ios')).toBeNull();
   });
 });
