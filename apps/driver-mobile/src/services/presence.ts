@@ -46,6 +46,21 @@ export function setSessionEndHandler(fn: SessionEndHandler) {
   onSessionEnd = fn;
 }
 
+/** Ride servisi bu işlevle oturum sonunu başlatır (döngüsel import yerine, aynı geri çağırma). */
+export function requestSessionEnd(reason: Parameters<SessionEndHandler>[0]) {
+  onSessionEnd(reason);
+}
+
+/**
+ * Kabul edilmiş (sürüm kapısından geçmiş) her `session_sync` için çağrılır: ride servisi çağrı listesini ve
+ * eşleşmiş yolculuğu buradan uzlaştırır. Ride servisi presence'ı içe aktarır (tersi değil) → döngü yok.
+ */
+type SyncListener = (payload: unknown) => void;
+let syncListener: SyncListener = () => {};
+export function setSyncListener(fn: SyncListener) {
+  syncListener = fn;
+}
+
 // Efektler sırayla uygulanır (ör. önce görev durur, sonra go_offline — kural 3.4-5).
 let queue: Promise<void> = Promise.resolve();
 
@@ -288,6 +303,8 @@ export function handleSessionSync(payload: unknown) {
   log('presence.sync', { status: sync.driverStatus, reason: sync.offlineReason ?? null, ignored: step.ignored });
   if (step.ignored) return;
   void apply(step);
+  // Varlık yaması store'a yazıldı (apply eşzamanlı yazar); ride kısmı güncel `server` ile uzlaştırılır.
+  syncListener(payload);
 }
 
 /** Bağlıyken güncel durumu ister (S3; arka plandan > 30 sn sonra dönüş). */

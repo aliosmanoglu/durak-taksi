@@ -159,7 +159,7 @@ const ACTIVE = { title: T.home.active, sub: T.home.activeSub, accent: 'green', i
 const PASSIVE = { title: T.home.passive, sub: T.home.passiveSub, accent: 'muted', icon: 'empty' } as const;
 
 /** Ana durum (3.2). */
-export function deriveHome(s: PresenceState, now: number): HomeView {
+export function deriveHome(s: PresenceState, now: number, opts: { hasActiveRide?: boolean } = {}): HomeView {
   const t = timing(s, now);
   const locked = now < s.toggleLockedUntil;
   const chips = deriveChips(s, now);
@@ -228,7 +228,8 @@ export function deriveHome(s: PresenceState, now: number): HomeView {
       banner: null,
     });
   }
-  if (s.server === 'busy') {
+  // Eşleşmiş yolculuk (sunucu `busy`, ya da yeniden girişte konum paylaşılmadığı için `offline`): AKTİF/PASİF yok.
+  if (s.server === 'busy' || (opts.hasActiveRide && s.server === 'offline')) {
     return view({ code: 'B1', title: T.home.busy, sub: T.home.busySub, accent: 'blue', icon: 'filled', button: null });
   }
   if (s.server === 'available') {

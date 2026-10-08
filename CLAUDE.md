@@ -56,11 +56,11 @@ Faz 2 yük betiği (CI dışı; iki API node'u aynı PG + Redis'e bağlı çalı
 - "500 şoför / 2 node / p95 < 50 ms": **kesin ölçülmedi.** Yerel yük testinde (2 node, 500 şoför, 60 sn) 9 783 güncellemede 0 kayıp; gönderimden Redis'te görünmeye p95 110 ms (100 ms örnekleme dahil üst sınır). Sunucu içi süre ölçülmüyor; kesin p95 Faz 5'te `driver_location_update` handler'ına `prom-client` histogramı eklenerek alınacak.
 - Mobil (aktif/pasif toggle, arka plan konumu, yeniden bağlanma, `session_sync` karşılaştırması): `apps/driver-mobile`'da yapıldı (tasarım: `docs/design/driver-mobile-faz2.md`); **cihazda doğrulanmadı**. Açık: S5 (iOS'ta duran araçta arka plan konumu seyrekleşip 60 sn eşiği aşılabilir), S6 (yalnızca ön plan izniyle konum servisinin arka planda sürüp sürmediği) — ikisi de development build'le gerçek cihazda ölçülmeli. `apps/stand-panel` hâlâ yer tutucudur.
 
-Faz 3+ (dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef tasarımdır.
+**Faz 3 (çağrı & FCFS eşleşme) yazıldı (dal `faz-3-dispatch`); kabul kriteri entegrasyon testiyle doğrulandı, panel ve mobil ekranlar tarayıcıda/cihazda doğrulanmadı.** Backend: `apps/api/src/rides/**` (state machine, Lua kabul, servis), `apps/worker/src/rides/**` (dispatch dalgaları, hatırlatma, yakındaki şoförler, uzlaştırıcı). Testler: `ride-accept-race` (50 şoför → tam 1 eşleşme), `dispatch`, `ride-lifecycle`, `ride-session`, `ride-race-*`, `ride-reconcile`, `ride-nearby`. API entegrasyon dosyaları **seri** koşar (uzlaştırıcı paylaşılan Redis'i tarar). Tasarım: `docs/design/faz3-dispatch.md` (onaylı varsayılanlarla; E-5 `/stand session_sync_request` ve E-6 `serverTime`/`serverNow` sözleşmeye eklendi). Panel: `apps/stand-panel` (React 18 + Vite; `pnpm --filter @duraknet/stand-panel dev|test|build`, `VITE_API_URL`). Mobil çağrı akışı: `apps/driver-mobile` (D1–D3; yeni native modüller `expo-audio`/`expo-keep-awake` → yeni development build gerekir). Backend'de tamamlandı (istemci entegrasyonu bekliyor): D5 (durak askıya alınca açık çağrılar `stand_suspended` ile iptal), `ride_taken.version`, `ride_accept` ack'inde `presenceVersion`, `DRIVER_SUSPENDED_REASON` sabiti. Açık: panel gerçek zamanlı katmanı testsiz, Nominatim/KVKK kararı (pilot öncesi).
 
 **Açık PR'lar:** #1 (`faz-2-presence` → `main`, Faz 2 backend) ve #2 (`faz-2-mobile` → `faz-2-presence`, mobil + S1–S4 sözleşmesi). Önce #1 birleşir, sonra #2'nin hedefi `main`'e çevrilir. Mobil tasarım kararları (S1–S4; otomatik yeniden aktif olma: `wantsOnline` iken, son normal konumdan ≤ 10 dk ve 10 dk'da en çok 3 kez) `docs/design/driver-mobile-faz2.md` Bölüm 9'dadır; onaylı görsel tasarım: https://claude.ai/artifact/CXRYFx5ubciRnfWmgJDkkg. Mobil saf mantık `apps/driver-mobile/src/lib/**` (vitest), RN/Expo katmanı `src/services/**` (testsiz, yalnızca typecheck + `expo export`).
 
-**Sıradaki adımlar:** (1) Faz 2 mobilin gerçek cihaz doğrulaması (S5, S6; bkz. tasarım belgesi Bölüm 9). (2) Faz 3 (çağrı & FCFS eşleşme); başlamadan önce yukarıdaki `busy` şoför kararı verilmeli. Çalışma düzeni: sözleşme (`packages/shared`) önce yazılır, ardından `backend-gelistirici` ve `tester` paralel çalışır, sonunda `kalite-kontrolcu` denetler. PR açmak için `gh` gerekir (yerelde `C:\Program Files\GitHub CLI\gh.exe`; terminal PATH'i yenilemediyse tam yolla çağır).
+**Sıradaki adımlar:** (1) Faz 2 mobilin gerçek cihaz doğrulaması (S5, S6; bkz. `docs/design/driver-mobile-device-test.md`). (2) Faz 3 panel + mobilin yerelde/cihazda uçtan uca denemesi, ardından PR (#1 ve #2 birleştikten sonra hedef `main`). Çalışma düzeni: sözleşme (`packages/shared`) önce yazılır, ardından `backend-gelistirici` ve `tester` paralel çalışır, sonunda `kalite-kontrolcu` denetler. PR açmak için `gh` gerekir (yerelde `C:\Program Files\GitHub CLI\gh.exe`; terminal PATH'i yenilemediyse tam yolla çağır).
 
 ### Şoför varlığı (`apps/api/src/presence/`, `apps/worker/src/sweeper.ts`)
 - Redis anahtarları ve zamanlamalar tek yerde: `packages/shared/src/redis.ts` (`redisKeys`, `PRESENCE`). Konum PG'ye yazılmaz.
@@ -74,7 +74,10 @@ Faz 3+ (dispatch, çağrı) henüz yok; aşağıda bunlara dair her şey hedef t
 - **`socket.data` yalnızca JSON'a çevrilebilir veri tutar** (şu an sadece `auth` claim'leri): redis-adapter onu node'lar arası `fetchSockets` yanıtında serileştirir. Zamanlayıcı gibi nesneler socket üzerinde Symbol anahtarıyla tutulur (`realtime.ts` → `timersOf`); test 7c bunu korur.
 - Sweeper BullMQ job scheduler'ıyla (`presence-sweep`) çalışır; çok replikada her tikte tek job üretilir, Lua idempotenttir. Worker ortamı: `REDIS_URL`, `HEARTBEAT_STALE_MS`, `SWEEP_EVERY_MS`.
 - `disconnectAccount` redis-adapter ile tüm node'lara ulaşır ama yerelde bile asenkrondur (bir Pub/Sub turu); askıya almanın etkisi buna bağlı değildir (DB kontrolü + `forceOffline`).
-- **Bilinen sınırlar:** (1) Sweeper tek taramada en eski 5 000 adayı okur; stale ama `busy` şoförler heartbeat'ten silinmediği için 5 000'i aşarlarsa available şoförler taranamaz (pilotta olası değil; çözüm: imleçli okuma veya busy şoförleri ayrı tutmak). (2) Worker'da health check yok. (3) **Faz 3'e açık karar:** `forceOffline` `busy` şoförü de koşulsuz offline yapar; eşleşmiş ride'ı olan şoför askıya alınır veya çıkış yaparsa ride'ın ne olacağı (yeniden arama mı, çıkışı reddetmek mi) Faz 3'te kararlaştırılmalı ve kabul testine eklenmelidir.
+- **Bilinen sınırlar:** (1) Sweeper tek taramada en eski 5 000 adayı okur; stale ama `busy` şoförler heartbeat'ten silinmediği için 5 000'i aşarlarsa available şoförler taranamaz (pilotta olası değil; çözüm: imleçli okuma veya busy şoförleri ayrı tutmak). (2) Worker'da health check yok. (3) **Faz 3 kararı (verildi):** `busy` şoför için: (a) **çıkış** (`/auth/logout`, socket kopması, sweeper) eşleşmiş ride'ı iptal etmez; ride `matched`, şoför `busy` kalır, şoför yeniden girince `session_sync.activeRide` ile devam eder. `forceOffline` logout'ta `busy` şoförü düşürmez. (b) **Askıya alma** eşleşmeyi bozar: ride `searching`'e döner (şoför `excluded`, `driver_id` boşalır, durağa `ride_driver_cancelled`), şoför `forceOffline` ile tamamen offline olur. (c) Eşleşmiş ride'ı **hem şoför hem durak** `completed` yapabilir (durak için yeni `ride_complete` event'i, `/stand`); iptal yine yalnızca durakta (`matched`→`cancelled`) ya da şoförün bilinçli `ride_driver_cancel`'ında (→ `searching`). Terk edilmiş `matched` ride'ı durak iptal/tamamlama ile kapatır.
+
+### Uzlaştırıcı (`apps/worker/src/rides/reconcile.ts`)
+BullMQ scheduler (`ride-reconcile`, `RECONCILE_EVERY_S=30`, `RECONCILE_MIN_AGE_S=30`, `RECONCILE_ORPHAN_AGE_S=60`, worker `REMINDER_FIRST_SEC`). PG kazanır; her kural idempotenttir. Yetim `created` ride'ı `searching`'e alır; job'sız `searching` ride'ın dispatch/hatırlatma zincirini yeniden kurar (çağrıyı iptal etmez); ride hash'i `matched` ama PG `searching`, şoför hash'i `busy` ama PG'de `matched` ride'ı yok, PG'de `matched` ama şoför `suspended` durumlarını "iki turda da görülürse" (`dn:reconcile:suspect:*` işareti) onarır; yakın zamanda terminal olmuş ride'ın açık görünen hash'ini kapatır; PG'de açık (`searching`/`matched`) ride'ı olup durağı `suspended` olanı (aynı iki-tur kuralı) `stand_suspended` ile iptal eder (eşleşmiş şoföre `ride_cancelled`, adaylara `ride_taken`, şoför `available`). API tarafında `mirror`/rollback/`startSearch` sınırlı yeniden denenir; kabul PG UPDATE'i şoför hesabının `approved` olmasını da şart koşar.
 
 ### Kimlik doğrulama mimarisi (`apps/api/src/auth/`)
 - Üç rol: `driver`, `stand`, `admin`. Kimlik bilgileri `drivers` / `stands` tablolarında; ayrı `users` tablosu yok. Yönetici tek hesaptır ve DB'de değil ortam değişkenlerindedir (`ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, `ADMIN_TOKEN_VERSION`); sabit id `'admin'`.
@@ -137,12 +140,12 @@ created ──► searching ──► matched ──► completed
                │  ▲          │
                │  └──────────┘  şoför iptali → yeniden arama (o şoför hariç tutulur)
                │
-               └──► cancelled   (yalnızca durak iptali)
-matched ──► cancelled           (yalnızca durak iptali)
+               └──► cancelled   (yalnızca durak iptali; tek istisna: durak askıya alma)
+matched ──► cancelled           (yalnızca durak iptali; tek istisna: durak askıya alma)
 ```
 **Kurallar:**
 - Durumlar: `created`, `searching`, `matched`, `completed`, `cancelled`. Terminal: `completed`, `cancelled`.
-- `cancelled`'a **yalnızca durak** geçirebilir. Zaman aşımı, "şoför bulunamadı" veya sistem kaynaklı iptal yoktur; `searching` süresiz sürebilir.
+- `cancelled`'a **yalnızca durak** geçirebilir. Zaman aşımı, "şoför bulunamadı" veya sistem kaynaklı iptal yoktur; `searching` süresiz sürebilir. **Tek istisna — durak askıya alma:** yönetici durağı askıya alınca (`/admin/stands/:id/suspend`) o durağın açık (`searching`/`matched`) ride'ları sistem tarafından `cancelled` yapılır (geçiş sebebi `stand_suspended`, aktör `system`, `cancel_reason = 'stand_suspended'`); eşleşmiş şoföre `ride_cancelled { reason: 'stand_suspended' }`, adaylara `ride_taken`, şoför `busy → available`. Sıra: önce askıya alma UPDATE'i, sonra soketler kesilir, sonra ride'lar iptal edilir; iptalde hata olsa da hesap askıda kalır (hata loglanır) ve worker uzlaştırıcısı kaçanı kapatır.
 - Geçişler yalnızca `RideStateMachine` modülünden yapılır; başka yerde `status` doğrudan güncellenmez. Geçersiz geçiş `INVALID_TRANSITION` hatası verir.
 - Her geçişte `rides.version` bir artar (optimistic concurrency) ve ilgili zaman damgası kolonu (`searching_at`, `matched_at` …) doldurulur.
 - `matched` sonrası **şoför** iptali → ride `searching`'e döner, `driver_id` boşaltılır, şoför `excluded` kümesine eklenir. **Durak** iptali → `cancelled`.
@@ -312,7 +315,7 @@ CREATE TABLE rides (
   current_radius_m  integer,
   notified_count    integer  NOT NULL DEFAULT 0,       -- toplam bildirilen şoför
 
-  cancel_reason     varchar(120),                      -- durağın girdiği opsiyonel sebep (iptal yalnızca duraktan gelir)
+  cancel_reason     varchar(120),                      -- durağın girdiği opsiyonel sebep (iptal yalnızca duraktan gelir; tek istisna: durak askıya alma → `stand_suspended`)
 
   created_at        timestamptz NOT NULL DEFAULT now(),
   searching_at      timestamptz,
@@ -435,7 +438,7 @@ Lua başarılıysa:
 UPDATE rides SET status='matched', driver_id=$1, matched_at=now(), version=version+1
 WHERE id=$2 AND status='searching';
 ```
-**0 satır dönerse** Redis state'i geri alınır ve şoföre `RIDE_NOT_AVAILABLE` döner. `uq_driver_one_active_ride` ikinci güvenlik katmanıdır. Başarıda: kazanana ack + `ride_accepted`, diğer adaylara `ride_taken`, durağa `ride_matched`, bekleyen dalga job'ı iptal edilir.
+**0 satır dönerse** Redis state'i geri alınır ve şoföre `RIDE_NOT_AVAILABLE` döner. `uq_driver_one_active_ride` ikinci güvenlik katmanıdır. Başarıda: kazanana ack + `ride_accepted`, diğer adaylara `ride_taken`, durağa `ride_matched`, bekleyen dalga job'ı iptal edilir. `ride_taken` `{ rideId, version }` taşır (version = ride'ın kapanış sürümü; kazananın diğer açık çağrıları için o ride'ın güncel sürümü). Kabul Lua'sı busy geçişinin yeni `presenceVersion`'ını ack'e verir.
 
 > Script birden fazla anahtara dokunduğu için Redis **cluster modunda çalışmaz** (CROSSSLOT). Cluster'a geçilecekse anahtarlar hash tag ile yeniden tasarlanmalıdır.
 
@@ -470,6 +473,7 @@ type RideRequest = {             // şoföre gösterilen açık çağrı
   dropoffAddress?: string; notes?: string;
   standName: string; distanceM: number;
   createdAt: string; version: number;   // süre sınırı yok; ride_taken gelene kadar açık
+  serverNow: string;                    // sunucu saati (ISO-8601 Z); istemci cihaz saati farkını bununla giderir
 };
 
 type RideSnapshot = {
@@ -487,7 +491,7 @@ type RideSnapshot = {
 |---|---|---|---|
 | `auth_refresh` | C → S | `{ token }` | Bağlantıyı koparmadan access token yenileme |
 | `auth_expired` | S → C | `{}` | Access token süresi doldu; istemci 30 sn içinde REST ile refresh edip yeni access token'ı `auth_refresh` ile göndermezse bağlantı kesilir |
-| `session_sync` | S → C | Şoför: `{ driverStatus, offlineReason?, presenceVersion, activeRide?: RideSnapshot, openRequests: RideRequest[] }` · Durak: `{ activeRides: RideSnapshot[] }` | Her (yeniden) bağlanmada; istemci state'ini bununla düzeltir. Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü). `offlineReason` (`user` \| `stale_heartbeat` \| `forced` \| `not_online`) yalnızca offline iken bulunur. `presenceVersion` her durum geçişinde kesin artar (Redis `TIME` tabanlı); istemci aynı bağlantıda daha küçük sürümlüyü yok sayar |
+| `session_sync` | S → C | Şoför: `{ driverStatus, offlineReason?, presenceVersion, activeRide?: RideSnapshot, openRequests: RideRequest[], serverTime }` · Durak: `{ activeRides: RideSnapshot[], serverTime }` | Her (yeniden) bağlanmada ve `session_sync_request` ack'inde (`/driver` ve `/stand`); istemci state'ini bununla düzeltir. `serverTime` sunucu saatidir (ISO-8601 `Z`): istemci `serverTime - cihazSaati` farkını hesaplayıp geçen süreyi buna göre gösterir (`RideRequest.serverNow` aynı amaçla).  Şoföre ayrıca offline durumdayken konum gönderdiğinde de gelir (ör. sweeper düşürdü). `offlineReason` (`user` \| `stale_heartbeat` \| `forced` \| `not_online`) yalnızca offline iken bulunur. `presenceVersion` her durum geçişinde kesin artar (Redis `TIME` tabanlı); istemci aynı bağlantıda daha küçük sürümlüyü yok sayar |
 
 ### Şoför (`/driver`)
 | Event | Yön | Payload |
@@ -497,13 +501,14 @@ type RideSnapshot = {
 | `session_sync_request` | C → S | `{}` → ack `{ ok, data: DriverSessionSync }` — bağlıyken güncel durumu istemek için (ör. uygulama arka plandan döndü) |
 | `driver_location_update` | C → S | `{ location: LatLng, heading?: number, accuracy?: number, ts: number }` — ack'siz, throttle 1/sn |
 | `ride_requested` | S → C | `RideRequest` |
-| `ride_accept` | C → S | `{ rideId }` → ack `{ ok, data: RideSnapshot }` veya `RIDE_NOT_AVAILABLE` |
+| `ride_accept` | C → S | `{ rideId }` → ack `{ ok, data: RideSnapshot & { presenceVersion } }` (`rideAcceptAckSchema`; `presenceVersion` = kabuldeki busy geçişinin sürümü) veya `RIDE_NOT_AVAILABLE`. `ride_accepted` event'i düz `RideSnapshot` kalır |
 | `ride_accepted` | S → C | `RideSnapshot` — kabul onayı (diğer cihaz oturumları için de) |
 | `ride_decline` | C → S | `{ rideId }` — şoför `excluded`'a eklenir |
-| `ride_taken` | S → C | `{ rideId }` — başkası aldı veya çağrı kapandı; ekrandan kaldırılır |
+| `ride_taken` | S → C | `{ rideId, version }` — başkası aldı veya çağrı kapandı (durak iptali / durak askıya alma dahil); ekrandan kaldırılır. `version` ride'ın kapanış sürümüdür; istemci elindekinden düşük sürümlüyü yok sayar |
 | `ride_driver_cancel` | C → S | `{ rideId, reason?, version }` — yalnızca `matched` durumundaki kendi ride'ı için; ride `searching`'e döner, şoför `excluded`'a eklenir ve tekrar `available` olur. Şoförün "Kabul/Detay" ekranında **"Çağrıyı iptal et"** butonu (onay diyaloğuyla) bulunur. |
 | `ride_complete` | C → S | `{ rideId, version }` — müşteri alındı |
-| `ride_cancelled` | S → C | `{ rideId, reason?, version }` — durak iptal etti (eşleşmiş şoföre gider) |
+| `ride_completed` | S → C | `{ rideId, completedAt, version }` — yalnızca **durak** tamamladığında şoföre gider (şoför kendi tamamlamasında ack alır) |
+| `ride_cancelled` | S → C | `{ rideId, reason?, version }` — durak iptal etti (eşleşmiş şoföre gider); durak askıya alınmışsa `reason: 'stand_suspended'` |
 
 ### Durak Paneli (`/stand`)
 | Event | Yön | Payload |
@@ -513,9 +518,11 @@ type RideSnapshot = {
 | `ride_matched` | S → C | `{ rideId, driver: { id, name, plate, vehicle, phone }, distanceM, version }` |
 | `ride_driver_cancelled` | S → C | `{ rideId, reason?, driverName, plate, version }` — eşleşen şoför vazgeçti, arama yeniden başladı (panel uyarı gösterir) |
 | `ride_still_open` | S → C | `{ rideId, searchingSince, minutesOpen, version }` — hatırlatma; çağrıyı iptal etmez |
-| `ride_completed` | S → C | `{ rideId, completedAt, version }` |
+| `ride_complete` | C → S | `{ rideId, version }` → ack — eşleşmiş (`matched`) ride'ı durak da tamamlayabilir |
+| `ride_completed` | S → C | `{ rideId, completedAt, version }` — şoför veya durak tamamlamasında durağa gider |
 | `ride_cancel` | C → S | `{ rideId, reason?, version }` |
 | `ride_cancelled` | S → C | `{ rideId, reason?, version }` — iptalin onayı (aynı durağın diğer tabletleri için) |
+| `session_sync_request` | C → S | `{}` (gövde zorunlu) → ack `{ ok, data: { activeRides: RideSnapshot[], serverTime } }` — bağlıyken güncel durumu istemek için (şoför tarafının eşi) |
 | `stand_nearby_drivers` | S → C | `{ drivers: { id, location: LatLng }[] }` — 10 sn'de bir, `max_radius_m` içindeki `available` şoförler |
 
 ### Ride Odası (`ride:{rideId}`)

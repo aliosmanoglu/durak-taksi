@@ -21,14 +21,20 @@ export const DRIVER_EVENTS = {
   rideTaken: 'ride_taken',
   rideDriverCancel: 'ride_driver_cancel',
   rideComplete: 'ride_complete',
+  /** S → C `RideCompletedEvent`. Yalnızca durak tamamladığında şoföre gider (şoför kendi ack'ini alır). */
+  rideCompleted: 'ride_completed',
   rideCancelled: 'ride_cancelled',
 } as const;
 
 export const STAND_EVENTS = {
+  /** C → S `{}`; ack `Ack<StandSessionSync>` (şoför tarafındakinin eşi). */
+  sessionSyncRequest: 'session_sync_request',
   rideCreate: 'ride_create',
   rideSearching: 'ride_searching',
   rideMatched: 'ride_matched',
   rideDriverCancelled: 'ride_driver_cancelled',
+  /** C → S `{ rideId, version }`, ack; eşleşmiş ride'ı durak da tamamlayabilir. */
+  rideComplete: 'ride_complete',
   rideCompleted: 'ride_completed',
   rideStillOpen: 'ride_still_open',
   rideCancel: 'ride_cancel',

@@ -42,6 +42,9 @@ export type OfflineLocationResult = {
  */
 export type LocationResult = 'ok' | 'throttled' | OfflineLocationResult;
 
+/** `updateLocation` yazıldığında (`ok`) doldurulan ek bilgi: busy şoförün ride'ı (ek Redis turu olmadan). */
+export type LocationOutcome = { status?: 'available' | 'busy'; rideId?: string };
+
 export interface PresenceService {
   /**
    * `offline` → `available`; GEO'ya ve heartbeat'e yazar, `offlineReason`'ı siler, sürümü artırır.
@@ -56,11 +59,17 @@ export interface PresenceService {
    */
   forceOffline(driverId: string): Promise<void>;
   /**
+   * `/auth/logout` için (Faz 3 kararı a): `busy` şoföre dokunmaz (eşleşmiş ride etkilenmez; yeniden girişte
+   * `session_sync.activeRide` ile devam eder), aksi halde `forceOffline` gibi offline yapar (sebep `forced`).
+   * Döner: gerçekten offline yapıldı mı.
+   */
+  forceOfflineUnlessBusy(driverId: string): Promise<boolean>;
+  /**
    * Hash + heartbeat'i günceller; yalnızca `available` ise GEO'ya yazar. `offline` şoförün konumu yok sayılır.
    * Durum kontrolü throttle'dan önce yapılır: offline şoförün güncellemesi throttle tüketmez.
    * Throttle Redis anahtarının TTL'ine (`SET NX PX`) dayanır, `now`'a değil; `goOnline` throttle tüketmez.
    */
-  updateLocation(driverId: string, update: LocationUpdate, now?: number): Promise<LocationResult>;
+  updateLocation(driverId: string, update: LocationUpdate, now?: number, out?: LocationOutcome): Promise<LocationResult>;
   /** Hash yoksa `offline`. */
   getStatus(driverId: string): Promise<DriverStatus>;
   /** Durum + sebep + sürüm tek atomik okumayla. Hash yoksa `offline` / `not_online` / Redis'in o anki zamanı. */
@@ -96,10 +105,10 @@ export function createPresence(redis: Redis): PresenceService {
   const readStateLua = defineLua(redis, 'dnPresenceReadState', 2, READ_STATE);
   const ttl = PRESENCE.DRIVER_HASH_TTL_S;
 
-  const offline = async (driverId: string, force: boolean) => {
+  const offline = async (driverId: string, force: boolean, reason?: StoredOfflineReason) => {
     const [status, version] = (await goOfflineLua(
       redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.driverPresenceVersion(driverId),
-      driverId, ttl, force ? '1' : '0', force ? FORCED : USER,
+      driverId, ttl, force ? '1' : '0', reason ?? (force ? FORCED : USER),
     )) as [string, number];
     return { status, presenceVersion: Number(version) };
   };
@@ -119,13 +128,18 @@ export function createPresence(redis: Redis): PresenceService {
       return { status: 'offline', presenceVersion: r.presenceVersion };
     },
 
-    // Faz 3 notu: busy şoför de koşulsuz offline yapılır; hash'teki `rideId` ve eşleşmiş ride'ın
-    // kendisi burada ele alınmaz. Askıya alınan şoförün aktif işinin ne olacağı Faz 3'te karara bağlanmalı.
+    // Askıya alma yolunda çağıran önce `RideService.releaseDriverForSuspension` çalıştırır (busy şoförün ride'ı
+    // searching'e döner); burada kalan busy da koşulsuz offline yapılır. Çıkışta `forceOfflineUnlessBusy` kullanılır.
     async forceOffline(driverId) {
       await offline(driverId, true);
     },
 
-    async updateLocation(driverId, update, now = Date.now()) {
+    async forceOfflineUnlessBusy(driverId) {
+      const r = await offline(driverId, false, FORCED);
+      return r.status !== 'busy';
+    },
+
+    async updateLocation(driverId, update, now = Date.now(), out) {
       const r = (await updateLocationLua(
         redisKeys.driver(driverId), redisKeys.geoAvailable, redisKeys.heartbeat, redisKeys.locationThrottle(driverId),
         redisKeys.driverPresenceVersion(driverId),
@@ -133,7 +147,13 @@ export function createPresence(redis: Redis): PresenceService {
         update.heading === undefined ? '' : num(update.heading),
         now, ttl, PRESENCE.LOCATION_THROTTLE_MS,
       )) as [number, string?, string?, number?];
-      if (r[0] === 1) return 'ok';
+      if (r[0] === 1) {
+        if (out) {
+          out.status = r[1] === 'busy' ? 'busy' : 'available';
+          if (r[2]) out.rideId = r[2];
+        }
+        return 'ok';
+      }
       if (r[0] === 0) return 'throttled';
       const s = toState(r[1], r[2], r[3]);
       // updateLocation yalnızca status available/busy değilken -1 döner; toState burada hep offline verir.

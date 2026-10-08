@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    // Çalışma alanında başka paketler (driver-mobile) @types/react 19 getirir ve köke hoist edilir;
+    // react-leaflet tipleri onu bulup bu paketin @types/react 18'iyle çakışır. Tek sürüme sabitlenir.
+    "paths": {
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

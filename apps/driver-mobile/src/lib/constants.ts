@@ -54,3 +54,24 @@ export const RATE_LIMIT_FALLBACK_MS = 60_000;
 export const TOAST_MS = 4_000;
 /** Kalıcı `lastSentAt` en fazla bu aralıkla diske yazılır (soğuk açılışta S4 kuralı için). */
 export const LAST_SENT_PERSIST_EVERY_MS = 15_000;
+
+// ---- Faz 3: çağrılar (docs/design/faz3-dispatch.md Bölüm 4) ----
+/** Odak değişince / kapanan çağrı yüzünden içerik kayınca KABUL/REDDET bu süre devre dışı kalır (yanlış karta dokunma). */
+export const ACTION_LOCK_MS = 700;
+/** REDDET sonrası `ride_decline` bu kadar gecikmeyle gönderilir; bu sürede GERİ AL mümkündür (Q3). */
+export const DECLINE_UNDO_MS = 4_000;
+/** "Çağrı başka şoföre gitti" kartı bu süre sonra kalkar. */
+export const TAKEN_CARD_MS = 3_000;
+/** "Çağrı kapandı" bildirimi. */
+export const CLOSED_TOAST_MS = 3_000;
+/** Çağrı sesi / titreşimi: ilk çağrıda tekrar sayısı ve tekrarlar arası aralık (başlangıçtan başlangıca). */
+export const RING_REPEATS = 3;
+export const RING_PERIOD_MS = 3_000;
+/** Titreşim deseni (ms): bekle, titre, bekle, titre. */
+export const RING_VIBRATION = [0, 400, 200, 400] as const;
+/** D3: tamamlama bildirimi bu süre sonra kendiliğinden kapanır (iptal kapanmaz). */
+export const CLOSED_AUTO_DISMISS_MS = 4_000;
+/** D1'de gösterilen en çok çağrı (fazlası "+{n} çağrı daha"). */
+export const MAX_LISTED_REQUESTS = 10;
+/** Görülen ride sürümleri tablosu bu boyutu aşarsa en eskiler atılır. */
+export const MAX_TRACKED_RIDE_VERSIONS = 100;

@@ -71,6 +71,57 @@ describe('presenceVersion (S2)', () => {
   });
 });
 
+describe('Faz 3: eşleşmiş yolculukla session_sync', () => {
+  it('parseSessionSync activeRide varlığını işaretler', () => {
+    expect(
+      parseSessionSync({ driverStatus: 'offline', presenceVersion: 1, activeRide: { rideId: 'x' } })?.hasActiveRide,
+    ).toBe(true);
+    expect(parseSessionSync({ driverStatus: 'busy', presenceVersion: 1 })?.hasActiveRide).toBeUndefined();
+  });
+
+  it('offline + activeRide (çıkış/yeniden giriş): bildirim ve otomatik aktif olma yok, sessizce pasif', () => {
+    // Soğuk açılış ve wantsOnline=true olsa bile, ya da yerelde aktifken bile.
+    for (const server of ['unknown', 'available', 'busy'] as const) {
+      const s = st({ server, wantsOnline: true, lastRoutineSentAt: NOW - 5000, lastSentAt: NOW - 5000 });
+      const r = reconcileSync(
+        s,
+        { driverStatus: 'offline', offlineReason: 'stale_heartbeat', presenceVersion: 7, hasActiveRide: true },
+        NOW,
+      );
+      expect(r.patch).toMatchObject({ server: 'offline', presenceVersion: 7 });
+      expect(r.patch.notice).toBeUndefined();
+      expect(r.patch.intent).toBeUndefined();
+      expect(types(r.effects)).not.toContain('autoReactivate');
+      expect(types(r.effects)).not.toContain('localNotify');
+    }
+  });
+
+  it('offline + activeRide yokken eski kurallar sürer (otomatik aktif olma)', () => {
+    const s = st({ server: 'available', wantsOnline: true, lastRoutineSentAt: NOW - 5000 });
+    const r = reconcileSync(s, { driverStatus: 'offline', offlineReason: 'stale_heartbeat', presenceVersion: 7 }, NOW);
+    expect(types(r.effects)).toContain('autoReactivate');
+  });
+});
+
+describe('Faz 3: busy şoför ve konum görevi', () => {
+  it('busy sync: izin/GPS varsa görev başlar; yoksa başlamaz (KONUM PAYLAŞ izin akışını yürütür)', () => {
+    const ok = reconcileSync(st({ server: 'unknown' }), { driverStatus: 'busy', presenceVersion: 1 }, NOW);
+    expect(types(ok.effects)).toEqual(['startTracking']);
+    for (const p of [{ perm: 'undetermined' as const }, { perm: 'denied' as const }, { gps: 'off' as const }]) {
+      const r = reconcileSync(st({ server: 'unknown', ...p }), { driverStatus: 'busy', presenceVersion: 1 }, NOW);
+      expect(r.patch).toMatchObject({ server: 'busy', intent: 'none' });
+      expect(r.effects).toEqual([]);
+    }
+  });
+
+  it('busy iken konum görevi başlatılamazsa go_offline gönderilmez (INVALID_TRANSITION döngüsü olmasın)', () => {
+    const r = onTrackingStartFailed(st({ server: 'busy' }));
+    expect(r.patch).toEqual({});
+    expect(types(r.effects)).toEqual(['toast']);
+    expect(types(onTrackingStartFailed(st({ server: 'available' })).effects)).toContain('emitGoOffline');
+  });
+});
+
 describe('bağlantı', () => {
   it('kopma anı ilk kopmada kaydedilir, tekrar kopmada korunur', () => {
     expect(onDisconnected(st(), NOW).patch.disconnectedAt).toBe(NOW);

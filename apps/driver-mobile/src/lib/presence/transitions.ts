@@ -201,6 +201,9 @@ export function onGoOnlineAck(
 
 /** Konum görevi ack'ten sonra başlatılamadı (kural 3.4-4): `driver_go_offline` gönderilir. */
 export function onTrackingStartFailed(s: PresenceState): Step {
+  // Eşleşmiş (`busy`) şoför pasif olamaz: `driver_go_offline` INVALID_TRANSITION döner ve görev yeniden başlatılırdı
+  // (sonsuz döngü). Yalnızca bildirilir; konum paylaşımı D2'deki KONUM PAYLAŞ ile yeniden denenir.
+  if (s.server === 'busy') return step({}, [{ type: 'toast', text: T.home.errTrackingFailed }]);
   if (s.conn === 'connected') {
     return step({ intent: 'goingOffline', wantsOnline: false }, [
       { type: 'emitGoOffline' },
@@ -295,7 +298,11 @@ export function recentAutoReactivations(times: readonly number[], now: number): 
   return times.filter((t) => now - t <= AUTO_REACTIVATE_WINDOW_MS);
 }
 
-export type SyncPayload = Pick<DriverSessionSync, 'driverStatus' | 'offlineReason'> & { presenceVersion?: number };
+export type SyncPayload = Pick<DriverSessionSync, 'driverStatus' | 'offlineReason'> & {
+  presenceVersion?: number;
+  /** Sunucu eşleşmiş yolculuk bildirdi (`driverStatus` `offline` olsa bile geçerli: yeniden giriş sonrası). */
+  hasActiveRide?: boolean;
+};
 
 /** `session_sync` (bağlanma, offline konum veya `session_sync_request` ack'i) ile yerel durumu uzlaştırır. */
 export function reconcileSync(s: PresenceState, sync: SyncPayload, now: number): Step & { ignored: boolean } {
@@ -320,6 +327,9 @@ export function reconcileSync(s: PresenceState, sync: SyncPayload, now: number):
       if (s.intent === 'goingOnline' || s.intent === 'reactivating') return out(patch);
       // Zaten pasif.
       if (s.server === 'offline') return out(patch, stopIfTracking);
+      // Eşleşmiş yolculuk var (çıkış + yeniden giriş, hash süresi dolmuş): pasif bildirimi/otomatik aktif olma yok;
+      // konum paylaşımı D2'deki KONUM PAYLAŞ ile açılır.
+      if (sync.hasActiveRide) return out(patch, stopIfTracking);
       // Soğuk açılış (önceki durum bilinmiyor) ve şoför aktif olmak istemiyordu: bildirim yok.
       if (s.server === 'unknown' && !s.wantsOnline) return out(patch, stopIfTracking);
 
@@ -369,8 +379,12 @@ export function reconcileSync(s: PresenceState, sync: SyncPayload, now: number):
     }
 
     case 'busy':
-      // Faz 3: aktif iş ekranı. Pasif olunamaz; konum görevi çalışır.
-      return out({ server: 'busy', offlineReason: undefined, intent: 'none' }, [{ type: 'startTracking' }]);
+      // Faz 3: aktif iş ekranı. Pasif olunamaz; konum görevi çalışır. İzin/GPS yoksa (ör. yeniden giriş sonrası
+      // izin henüz sorulmadı) görev başlatılmaz: D2'deki KONUM PAYLAŞ düğmesi izin akışıyla başlatır.
+      return out(
+        { server: 'busy', offlineReason: undefined, intent: 'none' },
+        hasLocationPermission(s.perm) && s.gps !== 'off' ? [{ type: 'startTracking' }] : [],
+      );
   }
 }
 
@@ -396,6 +410,7 @@ export function parseSessionSync(p: unknown): SyncPayload | null {
     out.offlineReason = o.offlineReason as SyncPayload['offlineReason'];
   }
   if (typeof o.presenceVersion === 'number' && Number.isFinite(o.presenceVersion)) out.presenceVersion = o.presenceVersion;
+  if (o.activeRide != null && typeof o.activeRide === 'object') out.hasActiveRide = true;
   return out;
 }
 

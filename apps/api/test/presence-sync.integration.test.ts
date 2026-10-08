@@ -106,10 +106,10 @@ function expectVersion(v: unknown) {
 
 /** Tam gövde: fazla alan yok, offlineReason yalnızca offline iken. */
 function expectOfflineSync(s: DriverSessionSync, reason: (typeof OFFLINE_REASONS)[number]) {
-  expect(s).toEqual({ driverStatus: 'offline', offlineReason: reason, presenceVersion: expect.any(Number), openRequests: [] });
+  expect(s).toEqual({ driverStatus: 'offline', offlineReason: reason, presenceVersion: expect.any(Number), openRequests: [], serverTime: expect.any(String) });
 }
 function expectOnlineSync(s: DriverSessionSync, status: 'available' | 'busy' = 'available') {
-  expect(s).toEqual({ driverStatus: status, presenceVersion: expect.any(Number), openRequests: [] });
+  expect(s).toEqual({ driverStatus: status, presenceVersion: expect.any(Number), openRequests: [], serverTime: expect.any(String) });
   expect(s).not.toHaveProperty('offlineReason');
 }
 

@@ -10,6 +10,8 @@ import { loadConfig } from './config';
 import { createDb } from './db';
 import { createPresence } from './presence/service';
 import { createRealtime } from './realtime';
+import { createDispatchScheduler } from './rides/scheduler';
+import { createRideService } from './rides/service';
 
 const config = loadConfig();
 const log = pino({ level: config.LOG_LEVEL });
@@ -25,6 +27,11 @@ const adapterSub = redis.duplicate();
 for (const c of [adapterPub, adapterSub]) c.on('error', (err) => log.warn({ err: err.message }, 'redis adapter hatası'));
 
 const presence = createPresence(redis);
+
+// Dispatch/hatırlatma job'ları BullMQ'dadır (zamanlama ve işleme worker'da); API yalnızca kuyruğa ekler.
+const bullConnection = redis.duplicate({ maxRetriesPerRequest: null });
+bullConnection.on('error', (err) => log.warn({ err: err.message }, 'bullmq redis hatası'));
+const scheduler = createDispatchScheduler(bullConnection, { reminderFirstMs: config.REMINDER_FIRST_SEC * 1000 });
 
 const auth: AuthDeps = {
   db,
@@ -45,9 +52,10 @@ const authLimiters = createAuthLimiters(
     }),
 );
 
-const { io, realtime, attach } = createRealtime(auth, log, {
+const { io, realtime, rides, attach } = createRealtime(auth, log, {
   corsOrigin: config.CORS_ORIGINS,
   presence,
+  rides: (sink) => createRideService({ db, redis, log, sink, scheduler }),
   adapter: createAdapter(adapterPub, adapterSub),
 });
 
@@ -55,6 +63,7 @@ const app = createApp({
   auth,
   realtime,
   presence,
+  rides,
   authLimiters,
   log,
   corsOrigin: config.CORS_ORIGINS,
@@ -74,7 +83,8 @@ httpServer.listen(config.PORT, () => log.info({ port: config.PORT }, 'api dinliy
 async function shutdown(signal: string) {
   log.info({ signal }, 'kapanıyor');
   await new Promise<void>((resolve) => io.close(() => resolve()));
-  await Promise.allSettled([db.destroy(), redis.quit(), adapterPub.quit(), adapterSub.quit()]);
+  await scheduler.close();
+  await Promise.allSettled([db.destroy(), redis.quit(), adapterPub.quit(), adapterSub.quit(), bullConnection.quit()]);
   process.exit(0);
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM'));

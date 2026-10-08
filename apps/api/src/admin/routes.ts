@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import pino, { type Logger } from 'pino';
 import { z } from 'zod';
 import { ACCOUNT_STATUSES } from '@duraknet/shared';
 import { requireAuth } from '../auth/middleware';
@@ -6,12 +7,13 @@ import type { AuthDeps } from '../auth/service';
 import { latOf, lngOf } from '../db';
 import { errors, parseBody } from '../http/errors';
 import type { PresenceService } from '../presence/service';
+import type { RideService } from '../rides/service';
 import type { Realtime } from '../realtime';
 
 const listQuery = z.object({ status: z.enum(ACCOUNT_STATUSES).optional() });
 const idParam = z.object({ id: z.uuid() });
 
-export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService): Router {
+export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService, log: Logger = pino({ level: 'silent' })): Router {
   const r = Router();
   r.use('/admin', requireAuth(deps, 'admin'));
 
@@ -83,7 +85,13 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .executeTakeFirst();
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('driver', id);
-    await presence?.forceOffline(id);
+    // Faz 3 kararı (b): eşleşmiş ride varsa searching'e döner (sebep driver_suspended); sonra şoför offline olur.
+    // releaseDriverForSuspension hata verse de forceOffline çalışır (şoför GEO'da kalmasın); hata yine yukarı gider.
+    try {
+      await rides?.releaseDriverForSuspension(id);
+    } finally {
+      await presence?.forceOffline(id);
+    }
     res.json({ ok: true, data: row });
   });
 
@@ -97,6 +105,14 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .executeTakeFirst();
     if (!row) throw errors.notFound();
     realtime.disconnectAccount('stand', id);
+    // Durak askıya alma = açık çağrıları sistem iptal eder (tek istisna; sebep `stand_suspended`). Askıya alma
+    // yukarıdaki UPDATE ile commit edilmiştir: ride iptali hata verirse hesap askıda kalır, hata loglanır ve
+    // istek başarılı döner; kaçan ride'ları worker uzlaştırıcısı kapatır (PG'de açık ride + askıdaki durak).
+    try {
+      await rides?.releaseStandForSuspension(id);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err.message : String(err), standId: id }, 'durak askıya alma: açık çağrılar iptal edilemedi');
+    }
     res.json({ ok: true, data: row });
   });
 

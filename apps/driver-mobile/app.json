@@ -15,6 +15,11 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Uygulama arka plandayken de (ör. navigasyon açıkken) çağrı alabilmeniz için konumunuz kullanılır. Pasifken konum paylaşılmaz.",
         "UIBackgroundModes": [
           "location"
+        ],
+        "LSApplicationQueriesSchemes": [
+          "comgooglemaps",
+          "yandexnavi",
+          "yandexmaps"
         ]
       }
     },
@@ -59,7 +64,8 @@
         {
           "color": "#3DDC84"
         }
-      ]
+      ],
+      "./plugins/with-nav-queries"
     ]
   }
 }

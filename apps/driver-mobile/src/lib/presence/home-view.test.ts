@@ -54,6 +54,16 @@ describe('ana durum (3.2)', () => {
     expect(v.button).toBeNull();
   });
 
+  it('B1: YOLCULUKTASINIZ başlığı; yolculuk varken sunucu offline ise de AKTİF OL gösterilmez', () => {
+    expect(deriveHome(active({ server: 'busy' }), NOW).title).toBe(T.home.busy);
+    expect(T.home.busy).toBe('YOLCULUKTASINIZ');
+    const v = deriveHome(passive(), NOW, { hasActiveRide: true });
+    expect(v.code).toBe('B1');
+    expect(v.button).toBeNull();
+    // Yolculuk yoksa pasif ana ekran aynen kalır.
+    expect(deriveHome(passive(), NOW, { hasActiveRide: false }).code).toBe('D3');
+  });
+
   it('C1: ≥ 60 sn son konumdan beri kopuk → Durum bilinmiyor + yerel PASİF OL', () => {
     const v = deriveHome(active({ conn: 'disconnected', disconnectedAt: NOW - 50_000, lastSentAt: NOW - 61_000 }), NOW);
     expect(v.code).toBe('C1');

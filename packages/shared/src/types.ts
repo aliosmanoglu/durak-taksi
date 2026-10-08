@@ -1,4 +1,5 @@
 // CLAUDE.md Bölüm 6 — ortak tipler. Sözleşmenin tek kaynağı burasıdır.
+import type { RideRequest, RideSnapshot } from './schemas';
 
 export const RIDE_STATUSES = ['created', 'searching', 'matched', 'completed', 'cancelled'] as const;
 export type RideStatus = (typeof RIDE_STATUSES)[number];
@@ -33,34 +34,7 @@ export type Ack<T = undefined> =
 export const DRIVER_STATUSES = ['offline', 'available', 'busy'] as const;
 export type DriverStatus = (typeof DRIVER_STATUSES)[number];
 
-export type RideRequest = {
-  rideId: string;
-  shortCode: string;
-  pickup: LatLng;
-  pickupAddress: string;
-  dropoffAddress?: string;
-  notes?: string;
-  standName: string;
-  distanceM: number;
-  createdAt: string;
-  version: number;
-};
-
-export type RideSnapshot = {
-  rideId: string;
-  shortCode: string;
-  status: RideStatus;
-  version: number;
-  stand: { id: string; name: string; phone: string; location: LatLng };
-  pickup: LatLng;
-  pickupAddress: string;
-  dropoff?: LatLng;
-  dropoffAddress?: string;
-  notes?: string;
-  driver?: { id: string; name: string; plate: string; vehicle?: string; phone: string; location?: LatLng };
-  createdAt: string;
-  matchedAt?: string;
-};
+// RideRequest / RideSnapshot ve ride event payload tipleri zod şemalarından türetilir (schemas.ts).
 
 /**
  * Şoförün neden `offline` olduğu (sunucu `dn:driver:{id}` hash'inde tutar):
@@ -91,7 +65,12 @@ export type DriverSessionSync = {
   /** Yalnızca `driverStatus === 'offline'` iken bulunur. */
   offlineReason?: OfflineReason;
   presenceVersion: PresenceVersion;
-  activeRide?: RideSnapshot; // Faz 3
-  openRequests: RideRequest[]; // Faz 3; şimdilik hep boş
+  /** Şoförün `matched` ride'ı varsa. */
+  activeRide?: RideSnapshot;
+  /** Şoföre gösterilen, hâlâ `searching` olan çağrılar (`dn:driver:{id}:requests`). */
+  openRequests: RideRequest[];
+  /** Sunucu saati (ISO-8601 `Z`); istemci cihaz saati farkını bununla hesaplar. */
+  serverTime: string;
 };
-export type StandSessionSync = { activeRides: RideSnapshot[] };
+/** Durağın açık (`searching` / `matched`) ride'ları. `session_sync` ve `/stand` `session_sync_request` ack'i. */
+export type StandSessionSync = { activeRides: RideSnapshot[]; serverTime: string };

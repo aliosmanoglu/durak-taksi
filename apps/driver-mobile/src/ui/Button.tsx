@@ -3,10 +3,11 @@ import { colors, sizes } from '@/lib/theme';
 import { Spinner } from './Icons';
 import { Txt } from './Txt';
 
-export type ButtonVariant = 'green' | 'outline' | 'light' | 'disabled' | 'wait' | 'danger' | 'ghost' | 'secondary';
+export type ButtonVariant = 'green' | 'blue' | 'outline' | 'light' | 'disabled' | 'wait' | 'danger' | 'ghost' | 'secondary';
 
 const V: Record<ButtonVariant, { bg: string; border: string; color: string }> = {
   green: { bg: colors.green, border: colors.green, color: colors.greenInk },
+  blue: { bg: '#9CC8FF', border: '#9CC8FF', color: colors.bg },
   outline: { bg: colors.bg, border: colors.outline, color: colors.text },
   light: { bg: colors.light, border: colors.light, color: colors.bg },
   disabled: { bg: colors.surface, border: colors.border, color: colors.disabledText },

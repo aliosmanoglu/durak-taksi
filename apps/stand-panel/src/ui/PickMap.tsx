@@ -1,0 +1,147 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import L from 'leaflet';
+import { Circle, MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
+import type { LatLng } from '@duraknet/shared';
+import { distanceMeters } from '../lib/geo';
+import { T } from '../lib/texts';
+import { TILE_ATTRIBUTION, TILE_URL } from '../services/config';
+
+export type MapTarget = { point: LatLng; nonce: number };
+
+const svgIcon = (html: string, size: number, anchorY = size / 2) =>
+  L.divIcon({ html, className: '', iconSize: [size, size], iconAnchor: [size / 2, anchorY] });
+
+const taxiIcon = svgIcon(
+  '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="2" y="9" width="20" height="9" rx="3" fill="#facc15" stroke="#1e293b" stroke-width="1.5"/><rect x="8" y="5" width="8" height="4" rx="1" fill="#1e293b"/><circle cx="7" cy="18" r="2.2" fill="#1e293b"/><circle cx="17" cy="18" r="2.2" fill="#1e293b"/></svg>',
+  28,
+);
+const standIcon = svgIcon(
+  '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#0f766e" stroke="#fff" stroke-width="2"/><text x="12" y="16.5" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" font-family="sans-serif">D</text></svg>',
+  30,
+);
+const flagIcon = (color: string) =>
+  svgIcon(
+    `<svg viewBox="0 0 24 34" width="28" height="40" aria-hidden="true"><path d="M12 33C12 33 2 20 2 12a10 10 0 0 1 20 0c0 8-10 21-10 21z" fill="${color}" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="#fff"/></svg>`,
+    40,
+    38,
+  );
+const pickupIcon = flagIcon('#1d4ed8');
+const dropoffIcon = flagIcon('#ea580c');
+
+/** Programatik `setView` ve kullanıcı hareketini ayırır; yalnızca kullanıcı hareketi `onCenter` çağırır. */
+function Controller({
+  target,
+  onCenter,
+  onTile,
+}: {
+  target: MapTarget | null;
+  onCenter: (c: LatLng) => void;
+  onTile: (ok: boolean) => void;
+}) {
+  const map = useMap();
+  const programmatic = useRef<LatLng | null>(null);
+  const lastNonce = useRef(0);
+
+  useEffect(() => {
+    if (!target || target.nonce === lastNonce.current) return;
+    lastNonce.current = target.nonce;
+    programmatic.current = target.point;
+    map.setView([target.point.lat, target.point.lng], Math.max(map.getZoom(), 16), { animate: false });
+  }, [target, map]);
+
+  useMapEvents({
+    moveend: () => {
+      const c = map.getCenter();
+      const p = programmatic.current;
+      if (p && distanceMeters(p, { lat: c.lat, lng: c.lng }) < 5) {
+        programmatic.current = null;
+        return;
+      }
+      programmatic.current = null;
+      onCenter({ lat: c.lat, lng: c.lng });
+    },
+    tileload: () => onTile(true),
+    tileerror: () => onTile(false),
+  });
+  return null;
+}
+
+export function PickMap({
+  initialCenter,
+  standLocation,
+  maxRadiusM,
+  drivers,
+  target,
+  mode,
+  pickup,
+  dropoff,
+  onCenter,
+  children,
+}: {
+  initialCenter: LatLng;
+  standLocation: LatLng;
+  maxRadiusM: number;
+  drivers: { id: string; location: LatLng }[];
+  target: MapTarget | null;
+  mode: 'pickup' | 'dropoff';
+  /** Dropoff modunda sabit gösterilen alış işareti. */
+  pickup: LatLng | null;
+  dropoff: LatLng | null;
+  onCenter: (c: LatLng) => void;
+  /** Haritanın üstüne bindirilen kontroller (KONUMUM vb.). */
+  children?: ReactNode;
+}) {
+  const [tilesOk, setTilesOk] = useState(true);
+  return (
+    <div className="relative h-72 min-h-[240px] w-full overflow-hidden rounded-xl border-2 border-slate-400 lg:h-80" role="application" aria-label="Alış noktası haritası">
+      <MapContainer
+        center={[initialCenter.lat, initialCenter.lng]}
+        zoom={16}
+        scrollWheelZoom
+        className="h-full w-full"
+        attributionControl
+      >
+        <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} />
+        <Controller target={target} onCenter={onCenter} onTile={setTilesOk} />
+        <Marker position={[standLocation.lat, standLocation.lng]} icon={standIcon} interactive={false} />
+        <Circle
+          center={[standLocation.lat, standLocation.lng]}
+          radius={maxRadiusM}
+          pathOptions={{ color: '#0f766e', weight: 1.5, fillOpacity: 0.03, interactive: false }}
+        />
+        {drivers.map((d) => (
+          <Marker key={d.id} position={[d.location.lat, d.location.lng]} icon={taxiIcon} interactive={false} />
+        ))}
+        {mode === 'dropoff' && pickup && <Marker position={[pickup.lat, pickup.lng]} icon={pickupIcon} interactive={false} />}
+        {mode === 'pickup' && dropoff && <Marker position={[dropoff.lat, dropoff.lng]} icon={dropoffIcon} interactive={false} />}
+      </MapContainer>
+
+      {/* Ortada sabit pin; harita altında kayar (parmak pin'i örtmesin). Pin'in ucu tam merkezdedir. */}
+      <div className="pointer-events-none absolute inset-0 z-[500] flex items-center justify-center">
+        <svg
+          viewBox="0 0 24 34"
+          width="40"
+          height="56"
+          style={{ transform: 'translateY(-50%)' }}
+          role="img"
+          aria-label={mode === 'pickup' ? T.map.pickupPin : T.map.dropoffPin}
+        >
+          <path
+            d="M12 33C12 33 2 20 2 12a10 10 0 0 1 20 0c0 8-10 21-10 21z"
+            fill={mode === 'pickup' ? '#1d4ed8' : '#ea580c'}
+            stroke="#fff"
+            strokeWidth="2"
+          />
+          <circle cx="12" cy="12" r="4" fill="#fff" />
+        </svg>
+      </div>
+
+      {!tilesOk && (
+        <div role="status" className="absolute left-2 top-2 z-[500] rounded-lg bg-yellow-100 px-3 py-2 text-base font-semibold text-yellow-950">
+          {T.map.tilesFailed}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
