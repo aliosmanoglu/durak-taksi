@@ -8,6 +8,7 @@ import {
 import type { ApiResult } from '@/lib/api-result';
 import { AUTH_EXPIRED_RETRY_MS } from '@/lib/constants';
 import { createGeneration } from '@/lib/generation';
+import { FORCE_LOGOUT_DELETE_TIMEOUT_MS, needsRefreshRetry } from '@/lib/push';
 import { log } from '@/lib/log';
 import { closeRealtime, connectRealtime, emitAck, initRealtime } from '@/lib/realtime';
 import {
@@ -27,6 +28,7 @@ import { request } from './http';
 import * as location from './location';
 import { notifyLocal } from './notify';
 import * as presence from './presence';
+import * as push from './push';
 import * as rides from './rides';
 import { storage } from './storage';
 
@@ -208,6 +210,7 @@ export async function boot() {
   if (booted) return;
   booted = true;
   bindPersistence();
+  push.initPush(getAccessToken);
   const [refresh, profile, wantsOnline, lastRoutineSentAt, tracking, soundEnabled, cachedRide] = await Promise.all([
     storage.getRefreshToken(),
     storage.getProfile(),
@@ -240,6 +243,8 @@ export async function boot() {
   if (d.kind === 'ok') {
     startRealtime();
     void loadProfile();
+    void push.syncPushToken();
+    void push.handleColdStartResponse();
     return;
   }
   // Ağ yok: önbellekteki profille ana ekran ("Bağlantı yok"); refresh geri çekilmeyle yeniden denenir.
@@ -257,6 +262,8 @@ async function bootRetry(attempt: number) {
     if (d.kind === 'retry') return void bootRetry(attempt + 1);
     startRealtime();
     void loadProfile();
+    void push.syncPushToken();
+    void push.handleColdStartResponse();
   }, backoffMs(attempt));
 }
 
@@ -284,6 +291,7 @@ export async function login(phone: string, password: string): Promise<LoginResul
     auth: 'signedIn',
   });
   startRealtime();
+  void push.syncPushToken();
   return r;
 }
 
@@ -298,8 +306,15 @@ export function register(input: DriverRegisterInput) {
 export async function logout(force = false): Promise<boolean> {
   loggingOut = true;
   await presence.apply({ patch: {}, effects: [{ type: 'stopTracking' }] });
-  if (!force) {
-    const r = await request<unknown>('POST', '/auth/logout', { token: accessToken });
+  // Uçuştaki token kaydı iptal edilir; silme HER çıkışta denenir (best effort, çıkışı kilitlemez).
+  push.resetPush();
+  if (force) {
+    await push.deletePushToken(accessToken, FORCE_LOGOUT_DELETE_TIMEOUT_MS);
+  } else {
+    // Token, `/auth/logout` `token_version`'ı artırmadan ÖNCE silinir (sonrasında access token geçersiz olur).
+    // Access token süresi dolduysa (401) önce refresh edilir. Başarısızlık loglanır, çıkış engellenmez.
+    await withFreshAccess((t) => push.deletePushToken(t));
+    const r = await withFreshAccess((t) => request<unknown>('POST', '/auth/logout', { token: t }));
     if (!r.ok && !(r.kind === 'http' && r.code === 'UNAUTHORIZED')) {
       loggingOut = false;
       return false;
@@ -309,10 +324,19 @@ export async function logout(force = false): Promise<boolean> {
   return true;
 }
 
+/** Çağrı 401 alırsa (access token süresi dolmuş) bir kez refresh edip yeniden dener; refresh başarısızsa ilk sonuç döner. */
+async function withFreshAccess<T>(call: (token: string | null) => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+  const first = await call(accessToken);
+  if (!needsRefreshRetry(first, false)) return first;
+  const d = await refreshTokens(false);
+  return d.kind === 'ok' ? call(accessToken) : first;
+}
+
 /** Çıkış vazgeçildi: sunucu hâlâ aktif sayıyorsa konum paylaşımı geri açılır. */
 export function cancelLogout() {
   loggingOut = false;
   void presence.resumeTrackingIfNeeded();
+  void push.syncPushToken();
 }
 
 async function clearLocalSession(reason: SessionEndReason | null) {
@@ -320,6 +344,7 @@ async function clearLocalSession(reason: SessionEndReason | null) {
   // Askıya alma eşleşmeyi düşürür: giriş ekranı şeridi bunu söyler (faz3 4.8).
   const hadRide = store.getState().activeRide != null;
   rides.resetRideServices();
+  push.resetPush();
   bumpGeneration();
   presence.stopSyncWatch();
   await location.stopTracking();

@@ -10,6 +10,7 @@ import { colors } from '@/lib/theme';
 import { goOnlineFlow, openSettings } from '@/services/actions';
 import { readPermission } from '@/services/location';
 import { readNotificationPermission, requestNotificationPermission } from '@/services/notify';
+import { syncPushToken } from '@/services/push';
 import * as presence from '@/services/presence';
 import { store } from '@/lib/store';
 import { Button } from '@/ui/Button';
@@ -147,7 +148,7 @@ export default function PermissionsScreen() {
 
   async function requestNotifications() {
     setBusy(true);
-    await requestNotificationPermission();
+    if (await requestNotificationPermission()) void syncPushToken();
     setBusy(false);
     await finish();
   }

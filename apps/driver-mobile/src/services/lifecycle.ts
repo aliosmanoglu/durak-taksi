@@ -5,6 +5,7 @@ import { isConnected } from '@/lib/realtime';
 import { navigationFlagOnForeground, shouldResyncOnForeground } from '@/lib/session-policy';
 import { store } from '@/lib/store';
 import * as presence from './presence';
+import * as push from './push';
 
 /** Ön plandayken izin/GPS bu aralıkla yeniden okunur (hızlı ayarlardan GPS kapatma AppState değiştirmez). */
 const DEVICE_POLL_MS = 5_000;
@@ -46,6 +47,8 @@ function onChange(next: AppStateStatus) {
   startPolling();
   // İzin ve GPS yeniden okunur: kullanıcı ayarlardan kapatmış olabilir (C3).
   void presence.refreshDeviceState();
+  // İzin ayarlardan sonradan verilmiş olabilir: token henüz yazılmadıysa yazılır (aynıysa istek atılmaz).
+  void push.syncPushToken();
   // S3: socket yeniden kurulmaz; bağlıysa güncel durum istenir.
   const flag = navigationFlagOnForeground(navigationLaunchedAt, Date.now(), sawBackground);
   if (flag !== 'keep') navigationLaunchedAt = null;
