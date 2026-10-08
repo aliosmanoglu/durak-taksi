@@ -121,7 +121,7 @@ export const T = {
     lastLocation: (sec: number) => (sec < 5 ? 'Son konum: şimdi' : `Son konum: ${sec} sn önce`),
     noLocation: 'Araç konumu bekleniyor',
     locationStale: 'Konum eski, araç sinyali kaybolmuş olabilir',
-    matchedSince: (e: string) => `Eşleşeli ${e}`,
+    matchedSince: (e: string) => `Eşleşme: ${e} önce`,
     details: 'Çağrı ayrıntıları alınıyor…',
   },
   cancel: {
