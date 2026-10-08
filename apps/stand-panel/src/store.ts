@@ -11,7 +11,15 @@ import type { Me } from './services/types';
 export type AuthStatus = 'booting' | 'bootFailed' | 'anon' | 'authed' | 'blocked';
 export type ConnState = 'connecting' | 'connected' | 'disconnected';
 export type Toast = { id: number; text: string; tone: 'info' | 'warn' | 'error' };
-export type PendingCreate = { pickupAddress: string; pickup: LatLng; knownIds: string[]; sentAtMs: number };
+export type PendingCreate = {
+  pickupAddress: string;
+  pickup: LatLng;
+  knownIds: string[];
+  sentAtMs: number;
+  /** Zaman aşımına uğrayan gönderimin idempotency kimliği ve içerik imzası (aynı içerikte yeniden kullanılır). */
+  clientRequestId: string;
+  signature: string;
+};
 
 export type PanelState = {
   auth: AuthStatus;

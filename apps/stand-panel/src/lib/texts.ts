@@ -68,6 +68,7 @@ export const T = {
     myLocation: 'KONUMUM',
     offline: 'Bağlantı yok. Çağrı oluşturulamıyor.',
     timeout: 'Yanıt gelmedi. Çağrı oluşmuş olabilir; listeyi kontrol edin.',
+    retrySafe: 'Yanıt gelmedi. Aynı çağrıyı tekrar gönderebilirsiniz; çift çağrı oluşmaz.',
     locked: (sec: number) => `Yinelenen çağrıyı önlemek için ${sec} sn bekleyin.`,
     created: (code: string) => `Çağrı oluşturuldu: ${code}`,
     duplicate: (code: string) => `Bu adrese açık çağrı var: ${code}`,

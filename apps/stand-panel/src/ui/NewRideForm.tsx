@@ -5,7 +5,7 @@ import { addressMismatch } from '../lib/pacer';
 import { NOTE_MAX, QUICK_NOTES, composeNote, noteForRequest } from '../lib/notes';
 import { findDuplicate } from '../lib/rides';
 import { T } from '../lib/texts';
-import { createRide } from '../services/actions';
+import { createRide, isSafeRetry } from '../services/actions';
 import { geocoder, timeoutSignal, type GeoHit } from '../services/geocode';
 import { saveRecent } from '../services/storage';
 import type { Me } from '../services/types';
@@ -193,8 +193,21 @@ export function NewRideForm({ me }: { me: Me }) {
     }
   }
 
+  function currentInput() {
+    return {
+      pickup: pin,
+      pickupAddress: address,
+      ...(dropoffOn && dropoff ? { dropoff } : {}),
+      ...(dropoffOn && dropoffAddress.trim() ? { dropoffAddress } : {}),
+      notes: noteForRequest(tags, noteText),
+    };
+  }
+
   const connected = conn === 'connected';
-  const lockLeftSec = Math.max(0, Math.ceil((lockUntil - now) / 1000));
+  const rawLockLeftSec = Math.max(0, Math.ceil((lockUntil - now) / 1000));
+  // Ack kaybından sonra AYNI içerik aynı kimlikle güvenle tekrar gönderilebilir: kilit yalnızca değişen içerik için geçerli.
+  const safeRetry = rawLockLeftSec > 0 && isSafeRetry(currentInput());
+  const lockLeftSec = safeRetry ? 0 : rawLockLeftSec;
   const addressOk = address.trim().length > 0;
   const duplicate = findDuplicate(ridesState, pin, distanceMeters);
   const noteLen = composeNote(tags, noteText).length;
@@ -203,7 +216,9 @@ export function NewRideForm({ me }: { me: Me }) {
     ? T.form.offline
     : lockLeftSec > 0
       ? T.form.locked(lockLeftSec)
-      : !addressOk
+      : safeRetry
+        ? T.form.retrySafe
+        : !addressOk
         ? geoStatus === 'failed'
           ? T.form.addressManual
           : T.form.needAddress
@@ -214,13 +229,7 @@ export function NewRideForm({ me }: { me: Me }) {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
-    const res = await createRide({
-      pickup: pin,
-      pickupAddress: address,
-      ...(dropoffOn && dropoff ? { dropoff } : {}),
-      ...(dropoffOn && dropoffAddress.trim() ? { dropoffAddress } : {}),
-      notes: noteForRequest(tags, noteText),
-    });
+    const res = await createRide(currentInput());
     if (!res.ok) {
       setError(res.message);
       setSubmitting(false);
