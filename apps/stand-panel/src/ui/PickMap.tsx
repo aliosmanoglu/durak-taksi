@@ -56,16 +56,41 @@ const dropoffIcon = flagIcon('#ea580c');
 /** Programatik `setView` ve kullanıcı hareketini ayırır; yalnızca kullanıcı hareketi `onCenter` çağırır. */
 function Controller({
   target,
+  vehicles,
   onCenter,
   onTile,
 }: {
   target: MapTarget | null;
+  vehicles: MapVehicle[];
   onCenter: (c: LatLng) => void;
   onTile: (ok: boolean) => void;
 }) {
   const map = useMap();
   const programmatic = useRef<LatLng | null>(null);
   const lastNonce = useRef(0);
+  const fitted = useRef(new Set<string>());
+
+  // Eşleşen araç ilk göründüğünde (ride başına bir kez) harita, araç görünür olacak kadar uzaklaşır.
+  // Merkez (= alış noktası pini) sabit kalır ve yalnızca uzaklaşılır; sonraki kullanıcı yakınlaştırması bozulmaz.
+  useEffect(() => {
+    const fresh = vehicles.filter((v) => !fitted.current.has(v.rideId));
+    if (fresh.length === 0) return;
+    for (const v of fresh) fitted.current.add(v.rideId);
+    const c = map.getCenter();
+    let dLat = 0;
+    let dLng = 0;
+    for (const v of vehicles) {
+      dLat = Math.max(dLat, Math.abs(v.location.lat - c.lat));
+      dLng = Math.max(dLng, Math.abs(v.location.lng - c.lng));
+    }
+    if (dLat === 0 && dLng === 0) return;
+    const bounds = L.latLngBounds([c.lat - dLat, c.lng - dLng], [c.lat + dLat, c.lng + dLng]);
+    const padding = L.point(48, 48);
+    const zoom = map.getBoundsZoom(bounds, false, padding);
+    if (zoom >= map.getZoom()) return;
+    programmatic.current = { lat: c.lat, lng: c.lng };
+    map.setView(c, zoom, { animate: false });
+  }, [vehicles, map]);
 
   useEffect(() => {
     if (!target || target.nonce === lastNonce.current) return;
@@ -130,7 +155,7 @@ export function PickMap({
         attributionControl
       >
         <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} />
-        <Controller target={target} onCenter={onCenter} onTile={setTilesOk} />
+        <Controller target={target} vehicles={vehicles} onCenter={onCenter} onTile={setTilesOk} />
         <Marker position={[standLocation.lat, standLocation.lng]} icon={standIcon} interactive={false} />
         <Circle
           center={[standLocation.lat, standLocation.lng]}
