@@ -1,6 +1,6 @@
-# Şoför uygulaması — gerçek cihaz testi (Faz 2)
+# Şoför uygulaması — gerçek cihaz testi (Faz 2 + Faz 3 + Faz 4)
 
-Kapsam: PR #2 "Doğrulanmayanlar" listesi + tasarım belgesi açık soruları S5, S6 (`driver-mobile-faz2.md` Bölüm 9).
+Kapsam: Faz 2: PR #2 "Doğrulanmayanlar" listesi + tasarım belgesi açık soruları S5, S6 (`driver-mobile-faz2.md` Bölüm 9) — Bölüm 4 A–E. Faz 3: çağrı akışı — Bölüm 4 F. Faz 4 kabul kriteri: navigasyon ve yaşam döngüsü — Bölüm 4 G, H.
 
 ## 1. API'yi telefondan erişilebilir çalıştırma
 
@@ -116,5 +116,42 @@ Uygulama ayarlarından konum iznini "Yalnızca kullanırken"e çek (Android 11+:
 | E3 | Çıkış yap (AKTİF iken) | Onay metni; çıkışta GEO'dan çıkar, bildirim kaybolur |
 | E4 | Sunucu API'sini durdur 2 dk, sonra başlat | İstemci yeniden bağlanır, durum doğru |
 
+### F. Faz 3 — çağrı akışı (Android + iOS)
+Ön koşul: PC'de worker + API + durak paneli (`pnpm --filter @duraknet/stand-panel dev`, `VITE_API_URL=http://<LAN-IP>:3000`) çalışıyor; onaylı bir durak hesabıyla panele giriş yapılmış; şoför AKTİF ve durağın `max_radius_m` içinde (gerekirse durak konumunu telefonun yakınına koy).
+| # | Adım | Beklenen |
+|---|---|---|
+| F1 | Panelden çağrı oluştur (alış adresi/pin) | Telefonda çağrı ekranı: ses + titreşim, çağrı süre sınırı olmadan açık kalır (tasarımdaki geri sayım/yaşlanma göstergesini not et); mesafe ve adres doğru |
+| F2 | Uygulama arka plandayken çağrı oluştur | Not et: bildirim/ses geliyor mu (**push Faz 5'te; gelmemesi beklenir**), uygulamayı açınca `session_sync` ile çağrı görünüyor mu |
+| F3 | KABUL ET | Kabul/Detay ekranı: alış adresi, durak adı, not, "Navigasyon" butonu; panelde kart EŞLEŞTİ |
+| F4 | İkinci bir çağrıyı başka şoför/sahte istemciyle önce kabul ettir | Telefonda çağrı kaybolur (`ride_taken`), hata ekranı yok |
+| F5 | Eşleşmişken panelden İPTAL ET | Telefonda "çağrı iptal edildi" ekranı, durum tekrar AKTİF/available |
+| F6 | Eşleşmişken şoför "Çağrıyı iptal et" (onay diyaloğuyla) | Panelde uyarı, çağrı yeniden aranıyor; bu şoför aynı çağrıyı tekrar görmez |
+| F7 | Eşleşmişken uygulamayı kapat/aç, giriş açık | `session_sync.activeRide` ile Kabul/Detay ekranı geri gelir |
+
+### G. Faz 4 — navigasyon (kabul kriteri; Android + iOS)
+Ön koşul: F3 ile eşleşmiş bir çağrı. Telefonda hangi harita uygulamalarının yüklü olduğunu not et.
+| # | Adım | Beklenen |
+|---|---|---|
+| G1 | Yalnızca Google Maps yüklüyken "Navigasyon" | Doğrudan Google Maps açılır, hedef = alış noktası, mod = sürüş (Android `google.navigation:`, iOS `comgooglemaps://`) |
+| G2 | Yandex Navigasyon yüklüyken | Seçim sayfası (birden fazla uygulama) → Yandex Navigasyon alış noktasına rota kurar |
+| G3 | Yandex Haritalar yüklüyken | Alış noktasına rota kurar |
+| G4 | iOS: Apple Haritalar | Alış noktasına sürüş rotası |
+| G5 | Birden fazla uygulama + "varsayılan yap" işaretli seçim | Sonraki "Navigasyon" doğrudan o uygulamayı açar; Hesap → "Harita uygulaması" satırı seçimi gösterir; SIFIRLA sonrası tekrar sorar |
+| G6 | Hiçbiri yüklü değil (ya da yüklü olanları gizle/kaldır) veya varsayılan uygulama silindi | Web fallback (`google.com/maps/dir/?api=1&destination=...`) tarayıcıda açılır, rota alış noktasına |
+| G7 | Koordinat doğruluğu (Türkçe dil/bölge ayarlı cihaz) | Hedef doğru nokta; virgül/ondalık hatası yok (nokta ayracı) |
+| G8 | **Android 11+:** `canOpenURL` yüklü uygulamaları görüyor mu | Seçim sayfasında yüklü uygulamalar listeleniyor. Görünmüyorsa `AndroidManifest.xml` `<queries>` bloğunu kontrol et (`with-nav-queries` plugin'i prebuild çıktısına işlemiş mi) |
+| G9 | iOS: ilk açılışta "… uygulamasında açılsın mı?" sistem uyarısı çıkarsa | Not et: uyarı sonrası/dönüşte ride ekranı ve konum yayını normal mi (navigasyon bayrağı `inactive`→`active` ile erken tüketilmemeli) |
+
+### H. Faz 4 — yaşam döngüsü ve panel (uçtan uca)
+| # | Adım | Beklenen |
+|---|---|---|
+| H1 | Navigasyon açıkken (uygulama arka planda) panelde eşleşen aracı izle | Araç simgesi (plaka etiketli) hareket eder, "Son konum: X sn önce" güncellenir. Durursa 20 sn sonra simge soluklaşır, "!" çıkar (S6 sonucuna bağlı) |
+| H2 | Navigasyondan uygulamaya dön (kısa ve > 30 sn süre ile ayrı ayrı) | Ride ekranı güncel durumla geri yüklenir (iptal/tamamlama olduysa yansır); Android ve iOS'ta sırayla dene |
+| H3 | Panel sayfasını yenile (F5) | Eşleşen kart ve araç simgesi (son konumuyla) geri gelir |
+| H4 | Müşteri alındı: şoför "Tamamla" | Panelde kart kapanır, araç simgesi kalkar; telefon AKTİF/available |
+| H5 | Aynısını panelden TAMAMLANDI ile | Telefona `ride_completed`; ekran kapanır |
+| H6 | Eşleşmişken PC'den durağı askıya al (admin) | Telefona `stand_suspended` iptali; panel oturumu kapanır |
+| H7 | Eşleşmişken şoför uygulamasından çıkış yap, tekrar giriş | Ride `matched` kalır, giriş sonrası `session_sync.activeRide` ile devam |
+
 ## 5. Sonuç raporu
-Bana şunları gönder: cihaz modeli + OS sürümü, yukarıdaki tablonun ✅/❌ hali, S5 için güncelleme aralığı ölçümü, S6 için C2/C3 sonucu, B4'te bildirimin kalıp kalmadığı, `adb logcat` hata satırları. Buna göre S5/S6 kararı verilip PR #2 listesi güncellenir.
+Bana şunları gönder: cihaz modeli + OS sürümü, yukarıdaki tablonun ✅/❌ hali, S5 için güncelleme aralığı ölçümü, S6 için C2/C3 sonucu, G1–G9 (hangi harita uygulamaları yüklüydü), H2 (dönüşte ekran), B4'te bildirimin kalıp kalmadığı, `adb logcat` hata satırları. Buna göre S5/S6 kararı verilip PR #2 listesi güncellenir.

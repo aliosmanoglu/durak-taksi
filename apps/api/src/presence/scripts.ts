@@ -86,7 +86,10 @@ redis.call('ZADD', KEYS[3], ARGV[5], ARGV[1])
 if st == 'available' then
   redis.call('GEOADD', KEYS[2], ARGV[3], ARGV[2], ARGV[1])
 end
-return {1, st, redis.call('HGET', KEYS[1], '${F.rideId}') or ''}
+if st == 'busy' then
+  return {1, st, redis.call('HGET', KEYS[1], '${F.rideId}') or ''}
+end
+return {1, st, ''}
 `;
 
 // KEYS: 1=dn:driver:{id} 2=dn:driver:{id}:pv

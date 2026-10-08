@@ -1,9 +1,11 @@
 import { STAND_SUSPENDED_REASON } from '@duraknet/shared';
 import { elapsedSince } from '../lib/clock';
+import { isLocationStale, locationAgeMs } from '../lib/driver-locations';
 import { formatDistance, formatElapsed, formatElapsedA11y, formatPhone, formatRadiusKm, telHref } from '../lib/format';
 import { isTerminal, type RideView } from '../lib/rides';
 import { T } from '../lib/texts';
 import { dismissCardBanner } from '../services/card-actions';
+import { useStore } from '../store';
 import { Banner, Button } from './kit';
 
 const stripe: Record<string, string> = {
@@ -58,6 +60,7 @@ export function RideCard({
   onComplete: (rideId: string) => void;
 }) {
   const terminal = isTerminal(ride.status);
+  const loc = useStore((st) => st.driverLocs[ride.rideId]);
   const actionsOff = !connected || shiftLocked;
   const searchingElapsed = elapsedSince(ride.searchingSince ?? ride.createdAt, now, clockOffset);
   const matchedElapsed = elapsedSince(ride.matchedAt, now, clockOffset);
@@ -137,6 +140,12 @@ export function RideCard({
           <div className="text-base text-slate-600 dark:text-slate-300">
             {ride.distanceM !== undefined && <span>{T.card.matchedDistance(formatDistance(ride.distanceM))}{' · '}</span>}
             {ride.matchedAt && T.card.matchedSince(formatElapsed(matchedElapsed))}
+          </div>
+          <div
+            className={`text-base ${loc && isLocationStale(loc, now) ? 'font-semibold text-yellow-900 dark:text-yellow-200' : 'text-slate-600 dark:text-slate-300'}`}
+          >
+            {loc ? T.card.lastLocation(Math.floor(locationAgeMs(loc, now) / 1000)) : T.card.noLocation}
+            {loc && isLocationStale(loc, now) && ` · ${T.card.locationStale}`}
           </div>
         </div>
       )}

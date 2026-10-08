@@ -2,6 +2,7 @@
 // `src/services/**` altındadır (store'u onlar çağırır; tersi yok).
 import { create } from 'zustand';
 import type { LatLng } from '@duraknet/shared';
+import { initialDriverLocs, pruneLocations, type DriverLocs } from './lib/driver-locations';
 import { initialRidesState, type RidesState } from './lib/rides';
 import type { RecentAddress } from './lib/recent-addresses';
 import { loadRecent, loadSoundEnabled } from './services/storage';
@@ -20,6 +21,8 @@ export type PanelState = {
   me: Me | null;
   conn: ConnState;
   ridesState: RidesState;
+  /** Eşleşmiş ride'ların araç konumu (rideId → konum); ride matched'tan çıkınca silinir. */
+  driverLocs: DriverLocs;
   /** Sunucu - cihaz saati farkı (ms); her `session_sync.serverTime` ile güncellenir. */
   clockOffset: number;
   nearby: { drivers: { id: string; location: LatLng }[]; atMs: number } | null;
@@ -48,6 +51,7 @@ export const useStore = create<PanelState>((set) => ({
   me: null,
   conn: 'connecting',
   ridesState: initialRidesState(),
+  driverLocs: initialDriverLocs(),
   clockOffset: 0,
   nearby: null,
   audioUnlocked: false,
@@ -73,7 +77,8 @@ export function updateRides(fn: (s: RidesState) => RidesState): void {
   if (next === st.ridesState) return;
   const prevIds = new Set(Object.keys(st.ridesState.rides));
   const gotNew = Object.keys(next.rides).some((id) => !prevIds.has(id));
-  st.set({ ridesState: next, ...(gotNew && prevIds.size > 0 ? { shiftLocked: true } : {}) });
+  const locs = pruneLocations(st.driverLocs, next);
+  st.set({ ridesState: next, ...(locs !== st.driverLocs ? { driverLocs: locs } : {}), ...(gotNew && prevIds.size > 0 ? { shiftLocked: true } : {}) });
   if (gotNew && prevIds.size > 0) {
     clearTimeout(shiftTimer);
     shiftTimer = setTimeout(() => useStore.getState().set({ shiftLocked: false }), 600);
@@ -106,6 +111,7 @@ export function resetSessionState(): void {
     me: null,
     conn: 'connecting',
     ridesState: initialRidesState(),
+    driverLocs: initialDriverLocs(),
     nearby: null,
     alerts: 0,
     shiftLocked: false,

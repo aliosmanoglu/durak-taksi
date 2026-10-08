@@ -10,6 +10,8 @@ import {
   NAMESPACES,
   STAND_EVENTS,
   nearbyDriversSchema,
+  RIDE_ROOM_EVENTS,
+  rideDriverLocationSchema,
   rideCancelledSchema,
   rideCompletedSchema,
   rideDriverCancelledSchema,
@@ -21,6 +23,7 @@ import {
   type ErrorCode,
 } from '@duraknet/shared';
 import { computeClockOffset } from '../lib/clock';
+import { applyDriverLocation, seedFromSync } from '../lib/driver-locations';
 import {
   applyCancelled,
   applyCompleted,
@@ -97,6 +100,12 @@ function handleSync(raw: unknown): void {
     closed = r.closed;
     return r.state;
   });
+  {
+    // session_sync'teki driver.location ilk konumdur (ride'lar yukarıda güncellendi).
+    const cur = useStore.getState();
+    const seeded = seedFromSync(cur.driverLocs, p.data.activeRides, Date.now());
+    if (seeded !== cur.driverLocs) cur.set({ driverLocs: seeded });
+  }
   quiet.clear();
   if (closed > 0) pushToast(T.list.closedWhileAway(closed), 'warn');
   resolvePendingCreate();
@@ -215,6 +224,14 @@ function bind(s: Socket): void {
     STAND_EVENTS.rideCancelled,
     rideEvent(rideCancelledSchema, (e, now) => (st) => applyCancelled(st, e, now)),
   );
+
+  s.on(RIDE_ROOM_EVENTS.driverLocation, (raw: unknown) => {
+    const p = rideDriverLocationSchema.safeParse(raw);
+    if (!p.success) return;
+    const st = useStore.getState();
+    const next = applyDriverLocation(st.driverLocs, st.ridesState, p.data, Date.now());
+    if (next !== st.driverLocs) st.set({ driverLocs: next });
+  });
 
   s.on(STAND_EVENTS.nearbyDrivers, (raw: unknown) => {
     const p = nearbyDriversSchema.safeParse(raw);

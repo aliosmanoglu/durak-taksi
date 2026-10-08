@@ -194,6 +194,10 @@ export const T = {
     soundOn: 'Açık',
     soundOff: 'Kapalı',
     soundHint: 'Kapalıyken yalnızca titreşim çalar.',
+    navApp: 'Harita uygulaması',
+    navAppAsk: 'Her seferinde sor',
+    navAppReset: 'Varsayılan harita uygulaması sıfırlansın mı? Sonraki navigasyonda yeniden seçersiniz.',
+    navAppResetCta: 'SIFIRLA',
   },
   logout: {
     title: 'Çıkış yapılsın mı?',

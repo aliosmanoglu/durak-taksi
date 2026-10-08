@@ -5,11 +5,13 @@ import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { navAppLabel, type NavAppId } from '@/lib/navigation';
 import { formatPlate, formatVehicle, maskPhone } from '@/lib/format';
 import { T } from '@/lib/texts';
 import { colors } from '@/lib/theme';
 import { openSettings } from '@/services/actions';
 import { readNotificationPermission } from '@/services/notify';
+import { navPlatform, readNavDefault, resetNavDefault } from '@/services/navigation';
 import { setSoundEnabled } from '@/services/rides';
 import { cancelLogout, logout } from '@/services/session';
 import { Button } from '@/ui/Button';
@@ -73,7 +75,7 @@ function LinkRow({ k, v, color, onPress }: { k: string; v: string; color: string
 
 const card = { borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' } as const;
 
-type Dialog = null | 'confirm' | 'working' | 'networkError';
+type Dialog = null | 'navReset' | 'confirm' | 'working' | 'networkError';
 
 export default function AccountScreen() {
   const router = useRouter();
@@ -84,8 +86,10 @@ export default function AccountScreen() {
   const soundEnabled = useApp((s) => s.soundEnabled);
   const [notif, setNotif] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [navDefault, setNavDefault] = useState<NavAppId | null>(null);
 
   useEffect(() => {
+    void readNavDefault().then(setNavDefault);
     void readNotificationPermission().then(setNotif);
   }, []);
 
@@ -169,6 +173,17 @@ export default function AccountScreen() {
           </View>
         </View>
 
+        <View style={card}>
+          <LinkRow
+            k={T.account.navApp}
+            v={navAppLabel(navDefault, navPlatform()) ?? T.account.navAppAsk}
+            color={navDefault ? colors.green : colors.muted}
+            onPress={() => {
+              if (navDefault) setDialog('navReset');
+            }}
+          />
+        </View>
+
         <Txt size={16} color={colors.muted} style={{ paddingHorizontal: 4 }}>
           {T.account.version(version, build)}
         </Txt>
@@ -189,36 +204,61 @@ export default function AccountScreen() {
               accessibilityViewIsModal
               style={{ padding: 24, borderRadius: 24, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.inputBorder, gap: 16 }}
             >
-              <Txt bold size={26} accessibilityRole="header">
-                {T.logout.title}
-              </Txt>
-              <Txt size={19} color={colors.textSoft} style={{ lineHeight: 28 }}>
-                {dialog === 'networkError'
-                  ? T.logout.errNetwork
-                  : hasRide
-                    ? T.ride.logout.confirmBusy
-                    : active
-                      ? T.logout.confirmActive
-                      : T.logout.confirm}
-              </Txt>
-              {dialog === 'networkError' ? (
+              {dialog === 'navReset' ? (
                 <>
-                  <Button label={T.common.retry} height={80} fontSize={24} onPress={() => void doLogout(false)} />
-                  <Button label={T.logout.forceCta} variant="danger" height={64} fontSize={21} radius={18} onPress={() => void doLogout(true)} />
-                  <Button label={T.logout.cancel} variant="ghost" height={56} fontSize={19} onPress={closeDialog} />
-                </>
-              ) : (
-                <>
-                  {/* VAZGEÇ varsayılan ve baskın seçenektir. */}
-                  <Button label={T.logout.cancel} height={80} fontSize={24} onPress={closeDialog} disabled={dialog === 'working'} />
+                  <Txt bold size={26} accessibilityRole="header">
+                    {T.account.navApp}
+                  </Txt>
+                  <Txt size={19} color={colors.textSoft} style={{ lineHeight: 28 }}>
+                    {T.account.navAppReset}
+                  </Txt>
+                  <Button label={T.logout.cancel} height={80} fontSize={24} onPress={closeDialog} />
                   <Button
-                    label={T.logout.cta}
-                    variant={dialog === 'working' ? 'wait' : 'danger'}
+                    label={T.account.navAppResetCta}
+                    variant="danger"
                     height={64}
                     fontSize={21}
                     radius={18}
-                    onPress={() => void doLogout(false)}
+                    onPress={() => {
+                      void resetNavDefault().then(() => setNavDefault(null));
+                      setDialog(null);
+                    }}
                   />
+                </>
+              ) : (
+                <>
+                  <Txt bold size={26} accessibilityRole="header">
+                    {T.logout.title}
+                  </Txt>
+                  <Txt size={19} color={colors.textSoft} style={{ lineHeight: 28 }}>
+                    {dialog === 'networkError'
+                      ? T.logout.errNetwork
+                      : hasRide
+                        ? T.ride.logout.confirmBusy
+                        : active
+                          ? T.logout.confirmActive
+                          : T.logout.confirm}
+                  </Txt>
+                  {dialog === 'networkError' ? (
+                    <>
+                      <Button label={T.common.retry} height={80} fontSize={24} onPress={() => void doLogout(false)} />
+                      <Button label={T.logout.forceCta} variant="danger" height={64} fontSize={21} radius={18} onPress={() => void doLogout(true)} />
+                      <Button label={T.logout.cancel} variant="ghost" height={56} fontSize={19} onPress={closeDialog} />
+                    </>
+                  ) : (
+                    <>
+                      {/* VAZGEÇ varsayılan ve baskın seçenektir. */}
+                      <Button label={T.logout.cancel} height={80} fontSize={24} onPress={closeDialog} disabled={dialog === 'working'} />
+                      <Button
+                        label={T.logout.cta}
+                        variant={dialog === 'working' ? 'wait' : 'danger'}
+                        height={64}
+                        fontSize={21}
+                        radius={18}
+                        onPress={() => void doLogout(false)}
+                      />
+                    </>
+                  )}
                 </>
               )}
             </View>
