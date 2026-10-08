@@ -103,6 +103,9 @@ BullMQ scheduler (`ride-reconcile`, `RECONCILE_EVERY_S=30`, `RECONCILE_MIN_AGE_S
 | `POST /auth/refresh` | — | `{ refreshToken }` |
 | `POST /auth/logout` | driver, stand | Hesabın tüm oturumlarını kapatır (`token_version+1`) ve açık socket'leri keser. Yönetici için 400: admin oturumu `ADMIN_TOKEN_VERSION` ile iptal edilir |
 | `GET /me` | herhangi | |
+| `PUT /me/push-token` | driver | `{ token }` (`pushTokenSchema`: `ExponentPushToken[...]`/`ExpoPushToken[...]`). Aynı token başka şoförde kayıtlıysa orada aynı transaction'da NULL'lanır. Limit: hesap başına 20 / 10 dk (Faz 5) |
+| `DELETE /me/push-token` | driver | Token'ı siler (`/auth/logout`, askıya alma ve Expo `DeviceNotRegistered` de siler) |
+| `GET /metrics` | `METRICS_TOKEN` (Bearer) | Prometheus; üretimde token tanımsızsa 404 (Faz 5) |
 | `PATCH /stands/me/settings` | stand | `{ initialRadiusM, maxRadiusM }` |
 | `GET /admin/drivers`, `GET /admin/stands` | admin | `?status=pending` |
 | `POST /admin/{drivers\|stands}/:id/approve` · `/suspend` | admin | |
@@ -488,6 +491,10 @@ type RideSnapshot = {
 };
 ```
 
+**Hız sınırı (Faz 5):** Hesap bazlı olay limitleri (`RATE_LIMITS.events`, `packages/shared/src/redis.ts`; Redis sabit pencere, anahtar `dn:ratelimit:ev:{olay}:{hesapId}`) aşılırsa ilgili event'in ack'i `{ ok: false, error: { code: 'RATE_LIMITED', message } }` döner. Redis hatasında limitleyici fail-open'dır. `driver_location_update` kendi 1/sn throttle'ında kalır.
+
+**İdempotent tekrar (Faz 5):** `ride_create` isteğe bağlı `clientRequestId` (uuid) taşır; aynı durak + aynı kimlik ikinci kez gelirse yeni ride açılmaz, ack mevcut `{ rideId, shortCode }`'u döner (`rides.client_request_id`, UNIQUE `(stand_id, client_request_id)`). Terminal geçiş tekrarları (ack kaybı sonrası yeniden deneme) hedef durum zaten sağlanmışsa hata yerine aynı sonucu döner (`ride_complete` → `completed`, `ride_cancel` → `cancelled`, `ride_accept` → zaten bu şoföre `matched`, `ride_driver_cancel` → şoför artık `excluded`); `VERSION_CONFLICT` yalnızca durum hedefte değilse döner. Yetki kontrolü sonuç kontrolünden önce yapılır.
+
 ### Ortak
 | Event | Yön | Payload | Açıklama |
 |---|---|---|---|
@@ -515,7 +522,7 @@ type RideSnapshot = {
 ### Durak Paneli (`/stand`)
 | Event | Yön | Payload |
 |---|---|---|
-| `ride_create` | C → S | `{ pickup: LatLng, pickupAddress, dropoff?: LatLng, dropoffAddress?, notes? }` → ack `{ ok, data: { rideId, shortCode } }` |
+| `ride_create` | C → S | `{ pickup: LatLng, pickupAddress, dropoff?: LatLng, dropoffAddress?, notes?, clientRequestId?: uuid }` → ack `{ ok, data: { rideId, shortCode } }` |
 | `ride_searching` | S → C | `{ rideId, wave, radiusM, notifiedCount, searchingSince, version }` — her dalga/taramada; panel geçen arama süresini gösterir |
 | `ride_matched` | S → C | `{ rideId, driver: { id, name, plate, vehicle, phone }, distanceM, version }` |
 | `ride_driver_cancelled` | S → C | `{ rideId, reason?, driverName, plate, version }` — eşleşen şoför vazgeçti, arama yeniden başladı (panel uyarı gösterir) |
@@ -533,7 +540,7 @@ type RideSnapshot = {
 | `ride_driver_location` | S → C | `{ rideId, location: LatLng, heading?, ts }` — durak panelinde eşleşen aracı haritada göstermek için |
 
 ### Arka Plan Bildirimi
-Şoför uygulaması arka plandaysa veya socket kopuksa `ride_requested` ile **paralel** Expo push gönderilir (`data: { type: 'ride_requested', rideId }`). Bildirime dokununca uygulama bağlanır, `session_sync` ile güncel açık çağrıları alır; push içeriğine güvenilerek kabul yapılmaz.
+Şoför uygulaması arka plandaysa veya socket kopuksa `ride_requested` ile **paralel** Expo push gönderilir (`data: { type: 'ride_requested', rideId }`). Bildirime dokununca uygulama bağlanır, `session_sync` ile güncel açık çağrıları alır; push içeriğine güvenilerek kabul yapılmaz. Token kaydı `PUT/DELETE /me/push-token` ile yapılır; `data.type` değerleri `PUSH_DATA_TYPES` (`ride_requested`, `account_suspended`), Android kanalı `rides`, TTL 300 sn (`PUSH` sabitleri, `packages/shared/src/redis.ts`).
 
 ---
 

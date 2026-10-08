@@ -55,6 +55,7 @@ export interface RidesTable {
   current_radius_m: number | null;
   notified_count: Generated<number>;
   cancel_reason: string | null;
+  client_request_id: string | null;
   created_at: Generated<Timestamp>;
   searching_at: Timestamp | null;
   matched_at: Timestamp | null;

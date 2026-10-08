@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   latLngSchema,
   rideCreateSchema,
+  pushTokenSchema,
+  PUSH,
+  PUSH_DATA_TYPES,
+  QUEUES,
+  RATE_LIMITS,
   RIDE_STATUSES,
   DISPATCH,
   REMINDER,
@@ -185,5 +190,34 @@ describe('redis sözleşmesi (Faz 3)', () => {
     expect(DISPATCH.GEOSEARCH_COUNT).toBe(25);
     expect(DISPATCH.LOCATION_FRESH_MS).toBe(30_000);
     expect(REMINDER).toEqual({ FIRST_SEC: 180, EVERY_SEC: 300 });
+  });
+});
+
+describe('Faz 5 sözleşmesi', () => {
+  it('pushTokenSchema Expo biçimini kabul eder, diğerlerini reddeder', () => {
+    expect(pushTokenSchema.safeParse({ token: 'ExponentPushToken[abc-123_X]' }).success).toBe(true);
+    expect(pushTokenSchema.safeParse({ token: 'ExpoPushToken[abc]' }).success).toBe(true);
+    expect(pushTokenSchema.safeParse({ token: 'fcm:abc' }).success).toBe(false);
+    expect(pushTokenSchema.safeParse({ token: 'ExponentPushToken[]' }).success).toBe(false);
+    expect(pushTokenSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rideCreate clientRequestId isteğe bağlı uuid', () => {
+    const base = { pickup: { lat: 41, lng: 29 }, pickupAddress: 'x' };
+    expect(rideCreateSchema.safeParse(base).success).toBe(true);
+    expect(rideCreateSchema.safeParse({ ...base, clientRequestId: '0b0f3f0e-8f5a-4a5e-9a52-0c2d8f0b7d11' }).success).toBe(true);
+    expect(rideCreateSchema.safeParse({ ...base, clientRequestId: 'abc' }).success).toBe(false);
+  });
+
+  it('PUSH / RATE_LIMITS / kuyruk sabitleri', () => {
+    expect(PUSH_DATA_TYPES).toEqual(['ride_requested', 'account_suspended']);
+    expect(PUSH.ANDROID_CHANNEL).toBe('rides');
+    expect(PUSH.TTL_S).toBe(300);
+    expect(PUSH.RECEIPT_DELAY_S).toBe(900);
+    expect(QUEUES.push).toBe('push');
+    expect(QUEUES.pushReceipts).toBe('push-receipts');
+    expect(RATE_LIMITS.events.ride_create).toEqual({ limit: 10, windowMs: 60_000 });
+    expect(RATE_LIMITS.events.auth_refresh.limit).toBe(10);
+    expect(redisKeys.eventRateLimit('ride_accept', 'd1')).toBe('dn:ratelimit:ev:ride_accept:d1');
   });
 });
