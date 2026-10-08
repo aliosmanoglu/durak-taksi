@@ -68,7 +68,7 @@ describe('3. geçersiz geçişler ve sürüm çakışması', () => {
     expect(await s.rideStatus(rideId)).toBe('matched');
   }, 30_000);
 
-  it('INVALID_TRANSITION: searching ride tamamlanamaz; iptal edilmiş ride tekrar iptal/tamamlanamaz', async () => {
+  it('INVALID_TRANSITION: searching ride tamamlanamaz; iptal edilmiş ride tamamlanamaz (tekrar iptal Faz 5 ile idempotent ok)', async () => {
     s = new Scope(t);
     const stand = await s.stand(uniqueCity());
     const { rideId } = await s.createRide(stand);
@@ -79,7 +79,8 @@ describe('3. geçersiz geçişler ve sürüm çakışması', () => {
 
     expect((await emitAck(stand.socket, STAND_EVENTS.rideCancel, { rideId, version: v })).ok).toBe(true);
     const v2 = (await s.ride(rideId))!.version;
-    expect(errCode(await emitAck(stand.socket, STAND_EVENTS.rideCancel, { rideId, version: v2 }))).toBe('INVALID_TRANSITION');
+    // Faz 5 idempotency: aynı iptalin tekrarı (ack kaybı sonrası yeniden deneme) hata değil ok döner; tamamlama hâlâ geçersiz.
+    expect((await emitAck(stand.socket, STAND_EVENTS.rideCancel, { rideId, version: v2 })).ok).toBe(true);
     expect(errCode(await emitAck(stand.socket, STAND_EVENTS.rideComplete, { rideId, version: v2 }))).toBe('INVALID_TRANSITION');
     expect((await s.ride(rideId))?.status).toBe('cancelled');
   }, 30_000);
@@ -254,7 +255,7 @@ describe('7. karar (c): tamamlama ve durak iptali', () => {
     expect(await s.inGeo(d.id)).toBe(true);
   }, 30_000);
 
-  it('iki kez tamamlama: ikincisi INVALID_TRANSITION (veya sürüm çakışması) döner; completed_at ve olay tekrarlanmaz', async () => {
+  it('iki kez tamamlama (Faz 5 idempotent): tekrarlar ok döner; completed_at, sürüm ve olay tekrarlanmaz', async () => {
     s = new Scope(t);
     const city = uniqueCity();
     const stand = await s.stand(city);
@@ -265,10 +266,8 @@ describe('7. karar (c): tamamlama ve durak iptali', () => {
     const first = await s.ride(rideId);
     const second = await emitAck(stand.socket, STAND_EVENTS.rideComplete, { rideId, version });
     const third = await emitAck(d.socket, DRIVER_EVENTS.rideComplete, { rideId, version: first!.version });
-    expect(second.ok).toBe(false);
-    expect(['INVALID_TRANSITION', 'VERSION_CONFLICT']).toContain(errCode(second));
-    expect(third.ok).toBe(false);
-    expect(errCode(third)).toBe('INVALID_TRANSITION');
+    expect(second.ok).toBe(true);
+    expect(third.ok).toBe(true);
     const row = await s.ride(rideId);
     expect(row?.completed_at?.getTime()).toBe(first?.completed_at?.getTime());
     expect(row?.version).toBe(first?.version);
@@ -277,7 +276,7 @@ describe('7. karar (c): tamamlama ve durak iptali', () => {
     expect(d.rec.count(DRIVER_EVENTS.rideCompleted, forRide(rideId))).toBe(0);
   }, 30_000);
 
-  it('şoför ve durak aynı anda tamamlar: tam biri kazanır; ride bir kez completed olur', async () => {
+  it('şoför ve durak aynı anda tamamlar: geçiş tek kez gerçekleşir (diğeri idempotent ok); ride bir kez completed olur', async () => {
     s = new Scope(t);
     const city = uniqueCity();
     const stand = await s.stand(city);
@@ -287,9 +286,8 @@ describe('7. karar (c): tamamlama ve durak iptali', () => {
       emitAck(d.socket, DRIVER_EVENTS.rideComplete, { rideId, version }),
       emitAck(stand.socket, STAND_EVENTS.rideComplete, { rideId, version }),
     ]);
-    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
-    const loser = a.ok ? b : a;
-    expect(['INVALID_TRANSITION', 'VERSION_CONFLICT']).toContain(errCode(loser));
+    // Faz 5: kaybeden hata yerine aynı sonucu (ok) alır; hedef durumda olduğu için VERSION_CONFLICT de dönmez.
+    expect(a.ok && b.ok, JSON.stringify([a, b])).toBe(true);
     const row = await s.ride(rideId);
     expect(row?.status).toBe('completed');
     expect(row?.version).toBe(version + 1);

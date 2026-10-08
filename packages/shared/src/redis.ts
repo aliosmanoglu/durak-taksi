@@ -15,6 +15,8 @@ export const redisKeys = {
   standActiveRides: (standId: string) => `dn:stand:${standId}:active_rides`,
   /** Socket olay hız sınırı sayacı (sabit pencere). */
   eventRateLimit: (event: string, accountId: string) => `dn:ratelimit:ev:${event}:${accountId}`,
+  /** Worker sweeper'ının son tik zamanı (epoch ms, STRING); worker /ready tazeliği için. */
+  sweeperLastTick: 'dn:worker:sweeper:last_tick',
   /** Uzlaştırıcı işareti (`kind`: `driver` | `ride`): bozukluk ilk görüldüğünde konur, ikinci turda onarılır. TTL'li. */
   reconcileSuspect: (kind: string, id: string) => `dn:reconcile:suspect:${kind}:${id}`,
 } as const;
@@ -147,9 +149,7 @@ export const PUSH = {
 } as const;
 
 /** `push` kuyruğu job verisi (API token'ı iş verisine alır; `expo-server-sdk` yalnızca worker'dadır). */
-export type PushJobData =
-  | { type: 'account_suspended'; token: string }
-  | { type: 'ride_requested'; rideId: string; tokens: string[]; standName: string; distanceM: number };
+export type PushJobData = { type: 'account_suspended'; token: string };
 
 type Limit = { limit: number; windowMs: number };
 const perMin = (limit: number): Limit => ({ limit, windowMs: 60_000 });
@@ -163,7 +163,7 @@ export const RATE_LIMITS = {
   /** PUT /me/push-token (hesap). */
   pushTokenPut: { limit: 20, windowMs: 600_000 } as Limit,
   /** Socket handshake (IP). */
-  socketHandshakeIp: perMin(60),
+  socketHandshakeIp: perMin(600),
   /** Socket olayları (hesap); anahtar `redisKeys.eventRateLimit(event, accountId)`. Aşılırsa ack `RATE_LIMITED`. */
   events: {
     ride_create: perMin(10),

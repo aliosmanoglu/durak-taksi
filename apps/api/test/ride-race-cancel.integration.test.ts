@@ -3,13 +3,15 @@
 import { randomInt } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DRIVER_EVENTS, redisKeys, STAND_EVENTS, type RideSnapshot } from '@duraknet/shared';
+import { perMin, withLimits } from './helpers/limits';
 import { startRideApp, type RideApp } from './helpers/ride-app';
 import { emitAck, errCode, north, Scope, sleep, uniqueCity, waitFor } from './helpers/rides';
 
 let t: RideApp;
 let s: Scope;
 beforeAll(async () => {
-  t = await startRideApp();
+  // Yarış çok tekrar eder; aynı durak çok sayıda ride_create gönderir: Faz 5 olay sınırları (ride_create 10/dk, ride_cancel 30/dk) yükseltilir.
+  t = await startRideApp({ ...withLimits({ events: { ride_create: perMin(10_000), ride_cancel: perMin(10_000), ride_accept: perMin(10_000) } }) });
 });
 afterEach(async () => {
   await s?.cleanup();

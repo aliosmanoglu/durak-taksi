@@ -1,5 +1,6 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Namespace, type ServerOptions, type Socket } from 'socket.io';
+import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
 import {
   authRefreshSchema,
@@ -12,6 +13,7 @@ import {
   rideAcceptSchema,
   rideCancelSchema,
   rideCompleteSchema,
+  RATE_LIMITS,
   rideCreateSchema,
   rideDeclineSchema,
   rideDriverCancelSchema,
@@ -25,6 +27,7 @@ import {
   type RideAcceptAck,
   type RideCancelledEvent,
   type RideCompletedEvent,
+  type RateLimitedEvent,
   type RideCreateResult,
   type StandSessionSync,
 } from '@duraknet/shared';
@@ -34,7 +37,11 @@ import { verifyToken, type VerifiedClaims } from './auth/tokens';
 import type { LocationOutcome, PresenceService, PresenceState } from './presence/service';
 import type { DriverRideSync, RideService } from './rides/service';
 import { createIoSink, type RideEventSink } from './rides/sink';
-import { replyOf, toAckError, validationError } from './socket-util';
+import { apiMetrics, type ApiMetrics } from './metrics';
+import {
+  clientIpOf, createEventLimiter, resolveRateLimits, type EventLimiter, type RateLimitOverrides,
+} from './rate-limits';
+import { rateLimitedError, replyOf, toAckError, validationError } from './socket-util';
 
 export interface Realtime {
   /**
@@ -103,10 +110,18 @@ function scheduleSessionExpiry(socket: Socket) {
   }, ms);
 }
 
-function registerCommonHandlers(deps: AuthDeps, socket: Socket, log: Logger) {
+/** Handler'ların ortak bağımlılıkları (Faz 5): olay hız sınırlayıcı (yoksa sınırsız) ve metrikler. */
+type HandlerCtx = { limiter: EventLimiter | null; metrics: ApiMetrics };
+
+/** Hesap bazlı olay sınırı; `false` ise çağıran ack olarak `RATE_LIMITED` döner. Limitleyici yoksa her zaman `true`. */
+const allowed = (ctx: HandlerCtx, socket: Socket, event: RateLimitedEvent): Promise<boolean> =>
+  ctx.limiter ? ctx.limiter.allow(event, dataOf(socket).auth.sub) : Promise.resolve(true);
+
+function registerCommonHandlers(deps: AuthDeps, socket: Socket, log: Logger, ctx: HandlerCtx) {
   // Bağlantıyı koparmadan access token yenileme. Yeni token aynı hesaba ait olmalı.
   socket.on(COMMON_EVENTS.authRefresh, async (payload: unknown, ack?: (r: Ack) => void) => {
     const reply = typeof ack === 'function' ? ack : () => {};
+    if (!(await allowed(ctx, socket, 'auth_refresh'))) return reply(rateLimitedError);
     const parsed = authRefreshSchema.safeParse(payload);
     if (!parsed.success) return reply({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'Geçersiz istek' } });
     const current = dataOf(socket).auth;
@@ -144,6 +159,7 @@ function registerDriverHandlers(
   rides: RideService | null,
   ready: Promise<boolean>,
   log: Logger,
+  ctx: HandlerCtx,
 ) {
   const driverId = () => dataOf(socket).auth.sub;
 
@@ -151,6 +167,7 @@ function registerDriverHandlers(
   socket.on(DRIVER_EVENTS.goOnline, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<DriverStatusResult>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'driver_go_online'))) return reply(rateLimitedError);
     const parsed = goOnlineSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     const id = driverId();
@@ -190,6 +207,7 @@ function registerDriverHandlers(
   socket.on(DRIVER_EVENTS.goOffline, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<DriverStatusResult>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'driver_go_offline'))) return reply(rateLimitedError);
     if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
     try {
       const r = await presence.goOffline(driverId());
@@ -203,6 +221,7 @@ function registerDriverHandlers(
   socket.on(DRIVER_EVENTS.sessionSyncRequest, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<DriverSessionSync>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'session_sync_request'))) return reply(rateLimitedError);
     if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
     try {
       reply({ ok: true, data: await driverSessionSync(await presence.getState(driverId()), rides, driverId()) });
@@ -221,6 +240,7 @@ function registerDriverHandlers(
     if (!(await ready)) return;
     const parsed = locationUpdateSchema.safeParse(payload);
     if (!parsed.success) return;
+    const stopTimer = ctx.metrics.locationUpdateSeconds.startTimer();
     try {
       const out: LocationOutcome = {};
       const r = await presence.updateLocation(driverId(), {
@@ -234,6 +254,8 @@ function registerDriverHandlers(
       }
     } catch (err) {
       log.warn({ err: err instanceof Error ? err.message : String(err) }, 'konum güncellenemedi');
+    } finally {
+      stopTimer();
     }
   });
 }
@@ -262,12 +284,14 @@ function registerDriverRideHandlers(
   rides: RideService,
   ready: Promise<boolean>,
   log: Logger,
+  ctx: HandlerCtx,
 ) {
   const claims = () => dataOf(socket).auth;
 
   socket.on(DRIVER_EVENTS.rideAccept, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideAcceptAck>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_accept'))) return reply(rateLimitedError);
     const parsed = rideAcceptSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     const id = claims().sub;
@@ -309,6 +333,7 @@ function registerDriverRideHandlers(
   socket.on(DRIVER_EVENTS.rideDecline, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<undefined>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_decline'))) return reply(rateLimitedError);
     const parsed = rideDeclineSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -322,6 +347,7 @@ function registerDriverRideHandlers(
   socket.on(DRIVER_EVENTS.rideDriverCancel, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<{ rideId: string; version: number }>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_driver_cancel'))) return reply(rateLimitedError);
     const parsed = rideDriverCancelSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -334,6 +360,7 @@ function registerDriverRideHandlers(
   socket.on(DRIVER_EVENTS.rideComplete, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideCompletedEvent>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_complete'))) return reply(rateLimitedError);
     const parsed = rideCompleteSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -356,13 +383,14 @@ async function standSessionSync(socket: Socket, rides: RideService | null): Prom
 }
 
 /** Durak ride event'leri: çağrı aç, iptal, tamamla, oturum durumu iste. */
-function registerStandHandlers(socket: Socket, rides: RideService, ready: Promise<boolean>, log: Logger) {
+function registerStandHandlers(socket: Socket, rides: RideService, ready: Promise<boolean>, log: Logger, ctx: HandlerCtx) {
   const standId = () => dataOf(socket).auth.sub;
 
   // Bağlıyken güncel durumu isteme (şoför tarafının eşi); gövde zorunlu `{}`.
   socket.on(STAND_EVENTS.sessionSyncRequest, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<StandSessionSync>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'session_sync_request'))) return reply(rateLimitedError);
     if (!emptyPayloadSchema.safeParse(payload).success) return reply(validationError);
     try {
       reply({ ok: true, data: await standSessionSync(socket, rides) });
@@ -374,6 +402,7 @@ function registerStandHandlers(socket: Socket, rides: RideService, ready: Promis
   socket.on(STAND_EVENTS.rideCreate, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideCreateResult>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_create'))) return reply(rateLimitedError);
     const parsed = rideCreateSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -386,6 +415,7 @@ function registerStandHandlers(socket: Socket, rides: RideService, ready: Promis
   socket.on(STAND_EVENTS.rideCancel, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideCancelledEvent>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_cancel'))) return reply(rateLimitedError);
     const parsed = rideCancelSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -398,6 +428,7 @@ function registerStandHandlers(socket: Socket, rides: RideService, ready: Promis
   socket.on(STAND_EVENTS.rideComplete, async (payload: unknown, ack?: unknown) => {
     const reply = replyOf<RideCompletedEvent>(ack);
     if (!(await ready)) return;
+    if (!(await allowed(ctx, socket, 'ride_complete'))) return reply(rateLimitedError);
     const parsed = rideCompleteSchema.safeParse(payload);
     if (!parsed.success) return reply(validationError);
     try {
@@ -411,23 +442,39 @@ function registerStandHandlers(socket: Socket, rides: RideService, ready: Promis
 /** `presence: null` (yalnızca kimlik/taşıma testleri) iken gönderilen varlık durumu. */
 const noPresenceState = (): PresenceState => ({ status: 'offline', offlineReason: 'not_online', presenceVersion: Date.now() });
 
-type NamespaceOpts = { presence: PresenceService | null; rides: RideService | null };
+type NamespaceOpts = {
+  presence: PresenceService | null;
+  rides: RideService | null;
+  ctx: HandlerCtx;
+  /** Handshake IP sınırı için istemci IP'si çıkarımı (Express `trust proxy` ile aynı anlam). */
+  trustProxy: boolean | number | string;
+};
 
 function setupNamespace(nsp: Namespace, deps: AuthDeps, role: SocketRole, log: Logger, opts: NamespaceOpts) {
+  // Bağlantı fırtınası koruması: kimlik doğrulamadan (DB'ye gitmeden) önce IP başına sınır.
+  nsp.use(async (socket, next) => {
+    if (!opts.ctx.limiter) return next();
+    const ip = clientIpOf(socket.request, opts.trustProxy);
+    if (await opts.ctx.limiter.allow('handshake', ip)) return next();
+    next(socketError('RATE_LIMITED', 'Çok fazla bağlantı denemesi, biraz bekleyin'));
+  });
   nsp.use(authMiddleware(deps, role));
   nsp.on('connection', async (socket) => {
     const claims = dataOf(socket).auth;
-    registerCommonHandlers(deps, socket, log);
+    const gauge = opts.ctx.metrics.socketConnections.labels(role);
+    gauge.inc();
+    socket.on('disconnect', () => gauge.dec());
+    registerCommonHandlers(deps, socket, log, opts.ctx);
     scheduleSessionExpiry(socket);
 
     let markReady!: (ok: boolean) => void;
     const ready = new Promise<boolean>((r) => (markReady = r));
     // Handler'lar hemen kaydedilir (erken gelen event'ler kaybolmasın), ama `ready` çözülene kadar bekler.
     if (role === 'driver' && opts.presence) {
-      registerDriverHandlers(deps, socket, opts.presence, opts.rides, ready, log);
-      if (opts.rides) registerDriverRideHandlers(deps, socket, opts.presence, opts.rides, ready, log);
+      registerDriverHandlers(deps, socket, opts.presence, opts.rides, ready, log, opts.ctx);
+      if (opts.rides) registerDriverRideHandlers(deps, socket, opts.presence, opts.rides, ready, log, opts.ctx);
     }
-    if (role === 'stand' && opts.rides) registerStandHandlers(socket, opts.rides, ready, log);
+    if (role === 'stand' && opts.rides) registerStandHandlers(socket, opts.rides, ready, log, opts.ctx);
 
     try {
       await socket.join(roomOf(role, claims.sub));
@@ -473,6 +520,19 @@ export type RealtimeOptions = {
   rides?: ((sink: RideEventSink) => RideService) | null;
   /** Çok node'lu kurulum için socket.io adapter fabrikası (ör. `createAdapter(pub, sub)`). */
   adapter?: ServerOptions['adapter'];
+  /**
+   * Faz 5 socket hız sınırları için Redis (olay sayaçları + handshake). Verilmezse (ve `eventLimiter` de yoksa)
+   * olay/handshake sınırı uygulanmaz. Sayaçlar bu bağlantıda `dn:ratelimit:ev:*` anahtarlarına yazılır.
+   */
+  redis?: Redis;
+  /** Hız sınırı override'ı (varsayılan `RATE_LIMITS`); yalnızca `redis` ile birlikte anlamlıdır. */
+  rateLimits?: RateLimitOverrides;
+  /** Hazır limitleyici (öncelikli; testler/özel kullanım). */
+  eventLimiter?: EventLimiter;
+  /** Handshake IP çıkarımı için Express `trust proxy` ile aynı anlamda ayar (varsayılan false). */
+  trustProxy?: boolean | number | string;
+  /** Prometheus metrikleri; verilmezse süreç geneli varsayılan. */
+  metrics?: ApiMetrics;
 };
 
 /**
@@ -482,16 +542,22 @@ export type RealtimeOptions = {
  * süreci ERR_HTTP_HEADERS_SENT ile çökertir.
  */
 export function createRealtime(deps: AuthDeps, log: Logger, opts: RealtimeOptions) {
+  const metrics = opts.metrics ?? apiMetrics();
+  const limiter: EventLimiter | null =
+    opts.eventLimiter ??
+    (opts.redis ? createEventLimiter({ redis: opts.redis, limits: resolveRateLimits(opts.rateLimits), log, metrics }) : null);
   const io = new Server({
     cors: { origin: opts.corsOrigin },
     serveClient: false,
+    maxHttpBufferSize: RATE_LIMITS.MAX_HTTP_BUFFER_BYTES,
     ...(opts.adapter ? { adapter: opts.adapter } : {}),
   });
   // Ana namespace kullanılmıyor; kimliksiz bağlantıları reddet.
   io.use((_socket, next) => next(socketError('FORBIDDEN', 'Geçersiz namespace')));
   const rides = opts.rides ? opts.rides(createIoSink(io)) : null;
-  setupNamespace(io.of(NAMESPACES.driver), deps, 'driver', log, { presence: opts.presence, rides });
-  setupNamespace(io.of(NAMESPACES.stand), deps, 'stand', log, { presence: null, rides });
+  const nsOpts = { ctx: { limiter, metrics }, trustProxy: opts.trustProxy ?? false };
+  setupNamespace(io.of(NAMESPACES.driver), deps, 'driver', log, { presence: opts.presence, rides, ...nsOpts });
+  setupNamespace(io.of(NAMESPACES.stand), deps, 'stand', log, { presence: null, rides, ...nsOpts });
 
   const realtime: Realtime = {
     disconnectAccount(role, id) {

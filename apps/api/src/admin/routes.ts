@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { sql } from 'kysely';
 import pino, { type Logger } from 'pino';
 import { z } from 'zod';
 import { ACCOUNT_STATUSES } from '@duraknet/shared';
@@ -8,12 +9,13 @@ import { latOf, lngOf } from '../db';
 import { errors, parseBody } from '../http/errors';
 import type { PresenceService } from '../presence/service';
 import type { RideService } from '../rides/service';
+import type { PushNotifier } from '../push/notifier';
 import type { Realtime } from '../realtime';
 
 const listQuery = z.object({ status: z.enum(ACCOUNT_STATUSES).optional() });
 const idParam = z.object({ id: z.uuid() });
 
-export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService, log: Logger = pino({ level: 'silent' })): Router {
+export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: PresenceService, rides?: RideService, log: Logger = pino({ level: 'silent' }), notifier?: PushNotifier): Router {
   const r = Router();
   r.use('/admin', requireAuth(deps, 'admin'));
 
@@ -77,14 +79,27 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
   // 500 döner ama askıya alma PG'de commit edilmiştir; tekrar denemek idempotenttir.
   r.post('/admin/drivers/:id/suspend', async (req, res) => {
     const { id } = parseBody(idParam, req.params);
-    const row = await deps.db
-      .updateTable('drivers')
-      .set((eb) => ({ status: 'suspended', token_version: eb('token_version', '+', 1) }))
-      .where('id', '=', id)
-      .returning(['id', 'status'])
-      .executeTakeFirst();
-    if (!row) throw errors.notFound();
+    // Tek UPDATE: durum + token_version artar, push token silinir; eski token `account_suspended` bildirimi için döner.
+    const res1 = await sql<{ id: string; status: 'suspended'; old_token: string | null }>`
+      UPDATE drivers d
+         SET status = 'suspended', token_version = d.token_version + 1, push_token = NULL
+        FROM (SELECT id, push_token FROM drivers WHERE id = ${id} FOR UPDATE) old
+       WHERE d.id = old.id
+      RETURNING d.id, d.status, old.push_token AS old_token`.execute(deps.db);
+    const found = res1.rows[0];
+    if (!found) throw errors.notFound();
+    const row = { id: found.id, status: found.status };
     realtime.disconnectAccount('driver', id);
+    // Bildirim yan etkidir ve BEKLENMEZ: Redis kesintisinde kuyruğa ekleme takılsa bile askıya alma yanıtı ve yukarıdaki
+    // adımlar gecikmez (ve bu adımlar hata verse de bildirim atılır). Token UPDATE sırasında yakalanmıştır. Hata/takılma yalnızca loglanır.
+    if (found.old_token && notifier) {
+      const token = found.old_token;
+      void Promise.resolve()
+        .then(() => notifier.accountSuspended(token))
+        .catch((err: unknown) =>
+          log.warn({ err: err instanceof Error ? err.message : String(err), driverId: id }, 'askıya alma bildirimi kuyruğa alınamadı'),
+        );
+    }
     // Faz 3 kararı (b): eşleşmiş ride varsa searching'e döner (sebep driver_suspended); sonra şoför offline olur.
     // releaseDriverForSuspension hata verse de forceOffline çalışır (şoför GEO'da kalmasın); hata yine yukarı gider.
     try {

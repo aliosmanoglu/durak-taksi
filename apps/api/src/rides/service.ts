@@ -12,9 +12,10 @@ import {
   type RideDriverCancelledEvent, type RideEventMessage, type RideMatchedEvent, type RideRequest,
   type RideSnapshot, type RideStatus, type RideTakenEvent,
 } from '@duraknet/shared';
-import { isUniqueViolation, toGeography, type Db } from '../db';
+import { isUniqueViolation, latOf, lngOf, toGeography, type Db } from '../db';
 import { AppError } from '../http/errors';
 import { defineLua } from '../presence/scripts';
+import { apiMetrics, type ApiMetrics } from '../metrics';
 import { distanceM } from './geo';
 import { fetchRideRows, toRequest, toSnapshot, type RideFilter } from './repo';
 import { ACCEPT, ACCEPT_ROLLBACK, DECLINE, MIRROR } from './scripts';
@@ -29,6 +30,8 @@ export type RideCreateInput = {
   dropoff?: LatLng;
   dropoffAddress?: string;
   notes?: string;
+  /** İdempotency: aynı durak + aynı kimlik tek ride üretir; tekrarda mevcut ride döner, yeni arama başlamaz. */
+  clientRequestId?: string;
 };
 
 export type DriverRideSync = { activeRide?: RideSnapshot; openRequests: RideRequest[] };
@@ -85,6 +88,8 @@ export type RideServiceOptions = {
   log: Logger;
   sink: RideEventSink;
   scheduler: DispatchScheduler;
+  /** Prometheus metrikleri; verilmezse süreç geneli varsayılan. */
+  metrics?: ApiMetrics;
 };
 
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -92,10 +97,13 @@ const shortCode = () =>
   Array.from({ length: 6 }, () => SHORT_CODE_ALPHABET[randomInt(SHORT_CODE_ALPHABET.length)]).join('');
 
 const notAvailable = () => new AppError(409, 'RIDE_NOT_AVAILABLE', 'Çağrı artık müsait değil');
+/** Tekrar (idempotent) eşlemesine aday hatalar: durum hedefte ise sonuç aynı döner, değilse hata korunur. */
+const RETRY_CODES = new Set(['INVALID_TRANSITION', 'VERSION_CONFLICT', 'FORBIDDEN']);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function createRideService(opts: RideServiceOptions): RideService {
   const { db, redis, log, sink, scheduler } = opts;
+  const metrics = opts.metrics ?? apiMetrics();
   const machine = new RideStateMachine(db);
   const driverTtl = PRESENCE.DRIVER_HASH_TTL_S;
   const terminalTtl = DISPATCH.RIDE_TERMINAL_TTL_S;
@@ -176,6 +184,27 @@ export function createRideService(opts: RideServiceOptions): RideService {
     return rows.map((r) => toRequest(r, pos ? distanceM(pos, r.pickup) : 0));
   }
 
+  /** İdempotent tekrar kontrolleri için ride'ın güncel (kısa) hali. Yalnızca hata yolunda okunur; karar değil, sonuç eşlemesi içindir. */
+  const terminalRow = (rideId: string) =>
+    db
+      .selectFrom('rides')
+      .select([
+        'status', 'version', 'stand_id', 'driver_id', 'completed_at', 'cancel_reason',
+        'last_driver_cancel_by', 'last_driver_cancel_version',
+      ])
+      .where('id', '=', rideId)
+      .executeTakeFirst();
+
+  /** Kabul tekrarı: ride bu şoföre zaten `matched` ise snapshot + güncel `presenceVersion` (yeni event yayınlanmaz). */
+  async function alreadyAcceptedBy(driverId: string, rideId: string): Promise<RideAcceptAck | null> {
+    const [status, owner] = await redis.hmget(redisKeys.ride(rideId), RIDE_HASH.status, RIDE_HASH.driverId);
+    if (status !== 'matched' || owner !== driverId) return null;
+    const [snapshot] = await snapshotsOf({ kind: 'ids', ids: [rideId] });
+    if (!snapshot || snapshot.status !== 'matched' || snapshot.driver?.id !== driverId) return null;
+    const pv = Number(await redis.get(redisKeys.driverPresenceVersion(driverId)));
+    return { ...snapshot, presenceVersion: Number.isFinite(pv) && pv > 0 ? pv : Date.now() };
+  }
+
   /** `matched` → `searching` sonrası ortak iş: önbellek, dispatch yeniden planı, durağa bildirim. */
   async function afterReturnToSearching(tr: TransitionResult, driverId: string, reason: string | undefined) {
     await mirror(tr, { releaseDriverId: driverId, excludeDriver: true });
@@ -214,27 +243,56 @@ export function createRideService(opts: RideServiceOptions): RideService {
     sink.toStand(tr.standId, STAND_EVENTS.rideCancelled, ev);
     sink.leaveRide(tr.rideId, 'both');
     publish(tr.rideId, tr.from, 'cancelled', tr.version);
+    metrics.ridesTotal.inc({ event: 'cancelled' });
     return ev;
   }
 
   return {
     async createRide(standId, input) {
       let inserted: { id: string; short_code: string } | undefined;
+      const requestId = input.clientRequestId;
       for (let attempt = 0; !inserted; attempt++) {
         try {
-          inserted = await db
+          const row = await db
             .insertInto('rides')
             .values({
               short_code: shortCode(),
               stand_id: standId,
+              client_request_id: requestId ?? null,
               pickup_location: toGeography(input.pickup),
               pickup_address: input.pickupAddress,
               dropoff_location: input.dropoff ? toGeography(input.dropoff) : null,
               dropoff_address: input.dropoffAddress ?? null,
               notes: input.notes ?? null,
             })
+            // Yalnızca (stand_id, client_request_id) çakışması sessizce yok sayılır; short_code çakışması 23505 verip yeniden denenir.
+            .onConflict((oc) =>
+              oc.columns(['stand_id', 'client_request_id']).where('client_request_id', 'is not', null).doNothing(),
+            )
             .returning(['id', 'short_code'])
-            .executeTakeFirstOrThrow();
+            .executeTakeFirst();
+          if (row) {
+            inserted = row;
+          } else if (requestId) {
+            // Aynı istek daha önce işlendi (ack kaybı sonrası yeniden deneme): mevcut ride'ı dön, yeni arama başlatma.
+            // İlk isteğin dispatch zinciri yarım kaldıysa worker uzlaştırıcısı kurar.
+            const existing = await db
+              .selectFrom('rides')
+              .select(['id', 'short_code', 'status', 'pickup_address', latOf('pickup_location').as('pLat'), lngOf('pickup_location').as('pLng')])
+              .where('stand_id', '=', standId).where('client_request_id', '=', requestId)
+              .executeTakeFirstOrThrow();
+            // Yalnızca AYNI içerik ve açık ride için idempotent ok. Kimlik yeniden kullanılmış (farklı içerik) ya da ride
+            // kapanmışsa istemci yeni kimlikle yeniden denemeli: 409 CONFLICT.
+            const sameContent =
+              existing.pickup_address === input.pickupAddress &&
+              Math.abs(Number(existing.pLat) - input.pickup.lat) < 1e-6 &&
+              Math.abs(Number(existing.pLng) - input.pickup.lng) < 1e-6;
+            if (!sameContent) throw new AppError(409, 'CONFLICT', 'Bu istek kimliği farklı bir çağrı için kullanılmış');
+            if (existing.status === 'completed' || existing.status === 'cancelled') {
+              throw new AppError(409, 'CONFLICT', 'Bu istek kimliğiyle açılan çağrı kapanmış; yeni kimlikle tekrar deneyin');
+            }
+            return { rideId: existing.id, shortCode: existing.short_code };
+          }
         } catch (err) {
           if (!isUniqueViolation(err) || attempt >= 4) throw err;
         }
@@ -262,6 +320,7 @@ export function createRideService(opts: RideServiceOptions): RideService {
         log.error({ err: errMsg(err), rideId }, 'ride önbelleği yazılamadı');
       }
       publish(rideId, 'created', 'searching', tr.version);
+      metrics.ridesTotal.inc({ event: 'created' });
       await startSearchSafe(rideId, tr.version);
       return { rideId, shortCode: inserted.short_code };
     },
@@ -274,6 +333,11 @@ export function createRideService(opts: RideServiceOptions): RideService {
       )) as [number, number | string, number?];
       if (r[0] !== 1) {
         const code = r[1];
+        if (code === 'RIDE_NOT_AVAILABLE') {
+          // İdempotent tekrar: ack kaybı sonrası aynı şoför yeniden kabul gönderdiyse ride zaten ona `matched`'tır.
+          const again = await alreadyAcceptedBy(driverId, rideId);
+          if (again) return again;
+        }
         if (code === 'NOT_A_CANDIDATE') throw new AppError(409, 'NOT_A_CANDIDATE', 'Bu çağrı size gösterilmedi');
         if (code === 'DRIVER_NOT_AVAILABLE') throw new AppError(409, 'DRIVER_NOT_AVAILABLE', 'Şu anda çağrı alamazsınız');
         throw notAvailable();
@@ -357,6 +421,10 @@ export function createRideService(opts: RideServiceOptions): RideService {
         sink.toStand(tr.standId, STAND_EVENTS.rideMatched, ev);
       }
       publish(rideId, 'searching', 'matched', tr.version);
+      metrics.ridesTotal.inc({ event: 'matched' });
+      if (tr.searchingAt && tr.matchedAt) {
+        metrics.matchSeconds.observe(Math.max(0, (tr.matchedAt.getTime() - tr.searchingAt.getTime()) / 1000));
+      }
       return { ...snapshot, presenceVersion };
     },
 
@@ -371,9 +439,22 @@ export function createRideService(opts: RideServiceOptions): RideService {
     },
 
     async driverCancel(driverId, input) {
-      const tr = await machine.transition({
-        rideId: input.rideId, reason: 'driver_cancelled', actor: 'driver', driverId, expectedVersion: input.version,
-      });
+      let tr: TransitionResult;
+      try {
+        tr = await machine.transition({
+          rideId: input.rideId, reason: 'driver_cancelled', actor: 'driver', driverId, expectedVersion: input.version,
+        });
+      } catch (err) {
+        // İdempotent tekrar: kanıt PG'dedir (iptal geçişiyle aynı UPDATE'te yazılan `last_driver_cancel_by`): yalnızca bu
+        // ride'ı GERÇEKTEN iptal etmiş şoföre, orijinal iptalin sürümüyle ok. Decline-only şoför eski hata yolunu alır.
+        if (err instanceof AppError && RETRY_CODES.has(err.code)) {
+          const row = await terminalRow(input.rideId);
+          if (row && row.last_driver_cancel_by === driverId && row.driver_id !== driverId && row.last_driver_cancel_version != null) {
+            return { rideId: input.rideId, version: row.last_driver_cancel_version };
+          }
+        }
+        throw err;
+      }
       await afterReturnToSearching(tr, driverId, input.reason);
       return { rideId: tr.rideId, version: tr.version };
     },
@@ -393,13 +474,30 @@ export function createRideService(opts: RideServiceOptions): RideService {
     },
 
     async complete(actor, input) {
-      const tr = await machine.transition({
-        rideId: input.rideId,
-        reason: 'completed',
-        actor: actor.role,
-        expectedVersion: input.version,
-        ...(actor.role === 'driver' ? { driverId: actor.id } : { standId: actor.id }),
-      });
+      let tr: TransitionResult;
+      try {
+        tr = await machine.transition({
+          rideId: input.rideId,
+          reason: 'completed',
+          actor: actor.role,
+          expectedVersion: input.version,
+          ...(actor.role === 'driver' ? { driverId: actor.id } : { standId: actor.id }),
+        });
+      } catch (err) {
+        // İdempotent tekrar: ride zaten `completed` ve çağıran onun sahibi ise aynı sonuç döner (yetki önce kontrol edilir).
+        if (err instanceof AppError && RETRY_CODES.has(err.code)) {
+          const row = await terminalRow(input.rideId);
+          const owner = actor.role === 'driver' ? row?.driver_id === actor.id : row?.stand_id === actor.id;
+          if (row && owner && row.status === 'completed') {
+            return {
+              rideId: input.rideId,
+              completedAt: (row.completed_at ? new Date(row.completed_at) : new Date()).toISOString(),
+              version: row.version,
+            };
+          }
+        }
+        throw err;
+      }
       await mirror(tr, { releaseDriverId: tr.driverId, excludeDriver: false });
       const ev: RideCompletedEvent = {
         rideId: tr.rideId, completedAt: (tr.completedAt ?? new Date()).toISOString(), version: tr.version,
@@ -409,18 +507,31 @@ export function createRideService(opts: RideServiceOptions): RideService {
       if (actor.role === 'stand' && tr.driverId) sink.toDriver(tr.driverId, DRIVER_EVENTS.rideCompleted, ev);
       sink.leaveRide(tr.rideId, 'both');
       publish(tr.rideId, 'matched', 'completed', tr.version);
+      metrics.ridesTotal.inc({ event: 'completed' });
       return ev;
     },
 
     async standCancel(standId, input) {
-      const tr = await machine.transition({
-        rideId: input.rideId,
-        reason: 'stand_cancelled',
-        actor: 'stand',
-        standId,
-        expectedVersion: input.version,
-        ...(input.reason ? { cancelReason: input.reason } : {}),
-      });
+      let tr: TransitionResult;
+      try {
+        tr = await machine.transition({
+          rideId: input.rideId,
+          reason: 'stand_cancelled',
+          actor: 'stand',
+          standId,
+          expectedVersion: input.version,
+          ...(input.reason ? { cancelReason: input.reason } : {}),
+        });
+      } catch (err) {
+        // İdempotent tekrar: aynı durağın ride'ı zaten `cancelled` ise `ok` (yabancı durak FORBIDDEN almaya devam eder).
+        if (err instanceof AppError && RETRY_CODES.has(err.code)) {
+          const row = await terminalRow(input.rideId);
+          if (row && row.stand_id === standId && row.status === 'cancelled') {
+            return { rideId: input.rideId, ...(row.cancel_reason ? { reason: row.cancel_reason } : {}), version: row.version };
+          }
+        }
+        throw err;
+      }
       return afterStandClose(tr, input.reason);
     },
 

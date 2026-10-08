@@ -21,6 +21,7 @@ import {
 } from '@duraknet/shared';
 import { sweepStaleDrivers } from '../../worker/src/sweeper';
 import { startTestApp, type TestApp } from './helpers/app';
+import { perMin, withLimits } from './helpers/limits';
 import {
   cleanupPresence,
   connectWithSync,
@@ -41,7 +42,8 @@ let t: TestApp;
 const touched = new Set<string>();
 
 beforeAll(async () => {
-  t = await startTestApp();
+  // Eşzamanlılık testi aynı şoför için çok sayıda go_online/offline gönderir: Faz 5 olay sınırı (20/dk) yükseltilir.
+  t = await startTestApp({ ...withLimits({ events: { driver_go_online: perMin(10_000), driver_go_offline: perMin(10_000) } }) });
 });
 afterEach(async () => {
   await cleanupPresence(t.redis, touched);

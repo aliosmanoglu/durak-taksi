@@ -6,9 +6,12 @@ import { RedisStore, type RedisReply } from 'rate-limit-redis';
 import { createApp } from './app';
 import { createAuthLimiters } from './auth/limits';
 import type { AuthDeps } from './auth/service';
-import { loadConfig } from './config';
+import { loadConfig, rateLimitOverridesOf } from './config';
 import { createDb } from './db';
+import { createGracefulShutdown } from './lifecycle';
+import { apiMetrics } from './metrics';
 import { createPresence } from './presence/service';
+import { createPushNotifier } from './push/notifier';
 import { createRealtime } from './realtime';
 import { createDispatchScheduler } from './rides/scheduler';
 import { createRideService } from './rides/service';
@@ -44,19 +47,30 @@ const auth: AuthDeps = {
 };
 
 // Sayaçlar Redis'te: tüm API node'ları aynı limitleri paylaşır.
-const authLimiters = createAuthLimiters(
-  (prefix) =>
-    new RedisStore({
-      prefix,
-      sendCommand: (command: string, ...args: string[]) => redis.call(command, ...args) as Promise<RedisReply>,
-    }),
-);
+const redisStoreFor = (prefix: string) =>
+  new RedisStore({
+    prefix,
+    sendCommand: (command: string, ...args: string[]) => redis.call(command, ...args) as Promise<RedisReply>,
+  });
+const authLimiters = createAuthLimiters(redisStoreFor);
+
+// Faz 5: hız sınırı ayarları (env ile ezilir), metrikler, şoför askıya alma push job'ı.
+const rateLimits = rateLimitOverridesOf(config);
+const metrics = apiMetrics();
+const pushNotifier = config.PUSH_ENABLED ? createPushNotifier(bullConnection) : undefined;
+if (pushNotifier) {
+  log.info("PUSH_ENABLED=true: account_suspended job'ları 'push' kuyruğuna atılır; worker'da da PUSH_ENABLED=true olmalı (aksi halde birikir)");
+}
 
 const { io, realtime, rides, attach } = createRealtime(auth, log, {
   corsOrigin: config.CORS_ORIGINS,
   presence,
-  rides: (sink) => createRideService({ db, redis, log, sink, scheduler }),
+  rides: (sink) => createRideService({ db, redis, log, sink, scheduler, metrics }),
   adapter: createAdapter(adapterPub, adapterSub),
+  redis,
+  rateLimits,
+  trustProxy: config.TRUST_PROXY,
+  metrics,
 });
 
 const app = createApp({
@@ -68,6 +82,13 @@ const app = createApp({
   log,
   corsOrigin: config.CORS_ORIGINS,
   trustProxy: config.TRUST_PROXY,
+  rateLimits,
+  rateLimitStore: redisStoreFor,
+  metrics,
+  ...(config.METRICS_TOKEN ? { metricsToken: config.METRICS_TOKEN } : {}),
+  metricsAllowAnon: config.METRICS_ALLOW_ANON,
+  isShuttingDown: () => lifecycle.isShuttingDown(),
+  ...(pushNotifier ? { pushNotifier } : {}),
   readinessChecks: [
     { name: 'postgres', check: async () => void (await pool.query('SELECT 1')) },
     { name: 'redis', check: async () => void (await redis.ping()) },
@@ -80,12 +101,16 @@ attach(httpServer);
 
 httpServer.listen(config.PORT, () => log.info({ port: config.PORT }, 'api dinliyor'));
 
-async function shutdown(signal: string) {
-  log.info({ signal }, 'kapanıyor');
-  await new Promise<void>((resolve) => io.close(() => resolve()));
-  await scheduler.close();
-  await Promise.allSettled([db.destroy(), redis.quit(), adapterPub.quit(), adapterSub.quit(), bullConnection.quit()]);
-  process.exit(0);
-}
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
+const lifecycle = createGracefulShutdown({
+  log,
+  drainMs: config.SHUTDOWN_DRAIN_MS,
+  timeoutMs: config.SHUTDOWN_TIMEOUT_MS,
+  httpServer,
+  io,
+  closeResources: async () => {
+    await Promise.allSettled([scheduler.close(), pushNotifier?.close()]);
+    await Promise.allSettled([db.destroy(), redis.quit(), adapterPub.quit(), adapterSub.quit(), bullConnection.quit()]);
+  },
+});
+process.on('SIGTERM', () => void lifecycle.shutdown('SIGTERM'));
+process.on('SIGINT', () => void lifecycle.shutdown('SIGINT'));

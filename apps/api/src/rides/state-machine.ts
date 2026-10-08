@@ -41,6 +41,9 @@ export type TransitionResult = {
   /** `matched` için şoför; `searching`/`created` için null. İptalde (`stand_cancelled`) önceki şoför korunur. */
   driverId: string | null;
   completedAt: Date | null;
+  /** Metrik için (`duraknet_match_seconds` = matchedAt - searchingAt). */
+  searchingAt: Date | null;
+  matchedAt: Date | null;
 };
 
 /** Saf planlama: geçişin hedef durumu ve kaynak durum kümesi. Geçersiz (sebep, aktör) `INVALID_TRANSITION`. */
@@ -67,6 +70,10 @@ export class RideStateMachine {
         status: to,
         version: eb('version', '+', 1),
         ...this.columnsFor(req, to),
+        // Şoför iptali kanıtı (idempotent tekrar için): iptal eden şoför ve iptalin yeni sürümü, geçişle aynı UPDATE'te.
+        ...(req.reason === 'driver_cancelled' && req.driverId
+          ? { last_driver_cancel_by: req.driverId, last_driver_cancel_version: eb('version', '+', 1) }
+          : {}),
       }))
       .where('id', '=', req.rideId)
       .where('status', 'in', froms);
@@ -84,7 +91,7 @@ export class RideStateMachine {
 
     let row;
     try {
-      row = await q.returning(['id', 'version', 'stand_id', 'driver_id', 'completed_at']).executeTakeFirst();
+      row = await q.returning(['id', 'version', 'stand_id', 'driver_id', 'completed_at', 'searching_at', 'matched_at']).executeTakeFirst();
     } catch (err) {
       // uq_driver_one_active_ride: şoförün zaten `matched` bir ride'ı var (ikinci güvenlik katmanı).
       if (req.reason === 'driver_accepted' && (err as { code?: string }).code === '23505') {
@@ -97,6 +104,8 @@ export class RideStateMachine {
     return {
       rideId: row.id, from, to, version: row.version, standId: row.stand_id, driverId: row.driver_id,
       completedAt: row.completed_at ? new Date(row.completed_at) : null,
+      searchingAt: row.searching_at ? new Date(row.searching_at) : null,
+      matchedAt: row.matched_at ? new Date(row.matched_at) : null,
     };
   }
 

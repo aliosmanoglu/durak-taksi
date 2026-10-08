@@ -12,6 +12,7 @@ import {
   type DispatchJobData, type LatLng, type ReminderJobData, type RideRequest, type RideSearchingEvent,
   type RideStillOpenEvent, type NearbyDriversEvent,
 } from '@duraknet/shared';
+import type { PushService } from '../push/service';
 import type { WorkerEmitter } from './emitter';
 
 export type DispatchTiming = {
@@ -48,6 +49,8 @@ export type RideJobDeps = {
   timing: DispatchTiming;
   dispatchQueue: Queue<DispatchJobData>;
   reminderQueue: Queue<ReminderJobData>;
+  /** Faz 5: `ride_requested` ile paralel push (yoksa push gönderilmez). Hatası dispatch'i bozmaz. */
+  push?: PushService;
 };
 
 export const JOB_OPTS = {
@@ -247,6 +250,16 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
     };
     emitter.toDriver(id, DRIVER_EVENTS.rideRequested, req);
   }
+  // Push socket ile paralel başlar ve ona/PG sayacına/sonraki dalga planına BEKLEMEZ; dalga planlandıktan sonra
+  // beklenir (job bitişi). `notifyRideRequested` asla reddetmez.
+  const pushDone: Promise<void> =
+    deps.push && added.length > 0
+      ? deps.push.notifyRideRequested({
+          rideId,
+          standName: ride.stand_name,
+          drivers: added.map((id) => ({ id, distanceM: Math.round(distOf.get(id) ?? 0) })),
+        })
+      : Promise.resolve();
 
   // PG sayaçları (durum değil; status'a dokunulmaz). Ride bu arada kapandıysa 0 satır: durağa bildirim gitmez.
   const upd = await pool.query<{ notified_count: number }>(
@@ -256,7 +269,10 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
     [rideId, Math.min(wave, 32767), radiusM, added.length, searchVersion],
   );
   const notifiedCount = upd.rows[0]?.notified_count;
-  if (notifiedCount === undefined) return { skipped: true };
+  if (notifiedCount === undefined) {
+    await pushDone;
+    return { skipped: true };
+  }
 
   await redis.hset(redisKeys.ride(rideId), { [RIDE_HASH.wave]: wave, [RIDE_HASH.radius]: radiusM });
   const searching: RideSearchingEvent = {
@@ -267,6 +283,7 @@ export async function processDispatch(deps: RideJobDeps, data: DispatchJobData):
   emitter.toStand(ride.stand_id, STAND_EVENTS.rideSearching, searching);
 
   await enqueueNextWave(deps, data);
+  await pushDone;
 
   log.debug({ rideId, wave, radiusM, added: added.length }, 'dispatch dalgası tamamlandı');
   return { skipped: false, wave, radiusM, newCandidates: added.length, notifiedCount };

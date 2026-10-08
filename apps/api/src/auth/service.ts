@@ -145,10 +145,19 @@ export async function logoutAllDevices(deps: AuthDeps, claims: TokenClaims): Pro
   if (claims.role === 'admin') {
     throw errors.validation('Yönetici oturumu ADMIN_TOKEN_VERSION ortam değişkeniyle iptal edilir');
   }
+  if (claims.role === 'driver') {
+    // Çıkışta push token da silinir: çıkış yapmış cihaza çağrı bildirimi gitmesin.
+    await deps.db
+      .updateTable('drivers')
+      .set((eb) => ({ token_version: eb('token_version', '+', 1), push_token: null }))
+      .where('id', '=', claims.sub)
+      .execute();
+    return 'driver';
+  }
   await deps.db
-    .updateTable(tableOf(claims.role))
+    .updateTable('stands')
     .set((eb) => ({ token_version: eb('token_version', '+', 1) }))
     .where('id', '=', claims.sub)
     .execute();
-  return claims.role;
+  return 'stand';
 }

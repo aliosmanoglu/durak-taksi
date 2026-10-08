@@ -26,7 +26,7 @@ Mevcut kimlik limitleri (`auth/limits.ts`) aynen kalır. Eklenenler:
 | REST genel (IP) | 600/dk | `/health`, `/ready`, `/metrics` hariç; `trustProxy` doğru olmalı |
 | REST kimlikli (hesap) | 240/dk | `/me`, `/stands/*`, `/admin/*`, `/me/push-token` |
 | `PUT /me/push-token` | 20/10 dk, hesap | |
-| Socket handshake (IP) | 60/dk | bağlantı fırtınası koruması |
+| Socket handshake (IP) | 600/dk | bağlantı fırtınası koruması; CGNAT arkasında çok şoför aynı IP'yi paylaşır, node kaybında toplu yeniden bağlanma takılmasın |
 | `ride_create` (durak) | 10/dk | |
 | `ride_accept` (şoför) | 30/dk | her çağrıda PG sorgusu yaptığı için |
 | `ride_decline` | 60/dk | |

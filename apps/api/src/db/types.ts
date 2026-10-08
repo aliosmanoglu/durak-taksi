@@ -56,6 +56,8 @@ export interface RidesTable {
   notified_count: Generated<number>;
   cancel_reason: string | null;
   client_request_id: string | null;
+  last_driver_cancel_by: string | null;
+  last_driver_cancel_version: number | null;
   created_at: Generated<Timestamp>;
   searching_at: Timestamp | null;
   matched_at: Timestamp | null;
