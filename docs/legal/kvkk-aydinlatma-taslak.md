@@ -26,7 +26,7 @@ Sözleşmenin kurulması/ifası (m.5/2-c), veri sorumlusunun meşru menfaati (m.
 - Push bildirimleri Expo/Apple/Google üzerinden iletilir (belirteç ve bildirim içeriği: çağrı kimliği). [Yurt dışı aktarım değerlendirmesi — hukuk]
 
 ## 5. İlgili kişi hakları (m.11)
-Bilgi talep etme, düzeltme, silme/anonimleştirme, itiraz. Başvuru: [kanal]. Silme talebi yönetici tarafından hesabın anonimleştirilmesiyle yerine getirilir; istatistik amaçlı çağrı kayıtları kişisel veri içermeden kalır.
+Bilgi talep etme, düzeltme, silme/anonimleştirme, itiraz. Başvuru: [kanal]. Silme talebi yönetici tarafından hesabın anonimleştirilmesiyle yerine getirilir; çağrı kayıtlarındaki serbest metin alanları (not, varış adresi) silinir; alış adresi istatistik amacıyla saklama süresi sonuna kadar kalır [karar bekliyor: saklama süresi sonunda silinecek mi, bölge düzeyine indirilecek mi].
 
 ## 6. Onay
 Kayıt sırasında bu metnin okunduğu onay kutusuyla kaydedilir; onay zamanı ve metin sürümü hesapla birlikte saklanır.

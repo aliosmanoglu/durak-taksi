@@ -166,3 +166,34 @@ describe('durak anonimleştirme', () => {
   });
 });
 
+
+describe('anonimleştirme sonrası (denetim bulguları)', () => {
+  it('durak anonimleştirilince ride notu ve varış adresi silinir, pickup_address kalır', async () => {
+    const stand = await t.registerStand();
+    standIds.push(stand.id);
+    const now = new Date().toISOString();
+    const ride = await seedRide(t, { standId: stand.id, status: 'completed', createdAt: now, completedAt: now });
+    await t.db.updateTable('rides').set({ notes: 'Ahmet Bey 0532', dropoff_address: 'Evi' }).where('id', '=', ride.id).execute();
+    expect((await anonymize('stands', stand.id)).status).toBe(200);
+    const row = await t.db.selectFrom('rides').select(['notes', 'dropoff_address', 'pickup_address']).where('id', '=', ride.id).executeTakeFirstOrThrow();
+    expect(row.notes).toBeNull();
+    expect(row.dropoff_address).toBeNull();
+    expect(row.pickup_address).toBeTruthy();
+  });
+
+  it('anonimleştirilmiş şoför ve durak tekrar onaylanamaz (404)', async () => {
+    const stand = await t.registerStand();
+    standIds.push(stand.id);
+    const d = await t.approvedDriver();
+    await anonymize('drivers', d.id);
+    await anonymize('stands', stand.id);
+    const tok = await t.adminToken();
+    for (const kind of ['drivers', 'stands'] as const) {
+      const id = kind === 'drivers' ? d.id : stand.id;
+      const res = await t.http().post(`/admin/${kind}/${id}/approve`).set('Authorization', `Bearer ${tok}`);
+      expect(res.status, kind).toBe(404);
+    }
+    expect((await driverRow(d.id)).status).toBe('suspended');
+    expect((await standRow(stand.id)).status).toBe('suspended');
+  });
+});

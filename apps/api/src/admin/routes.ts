@@ -55,6 +55,7 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .updateTable('drivers')
       .set({ status: 'approved', approved_at: new Date() })
       .where('id', '=', id)
+      .where('password_hash', '<>', 'anonymized')
       .returning(['id', 'status'])
       .executeTakeFirst();
     if (!row) throw errors.notFound();
@@ -67,6 +68,7 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .updateTable('stands')
       .set({ status: 'approved' })
       .where('id', '=', id)
+      .where('password_hash', '<>', 'anonymized')
       .returning(['id', 'status'])
       .executeTakeFirst();
     if (!row) throw errors.notFound();
@@ -190,6 +192,13 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .returning(['id', 'status'])
       .executeTakeFirst();
     if (!row) throw errors.notFound();
+    // Serbest metin kişisel veri içerebilir (not, varış adresi): durağın ride kayıtlarından silinir.
+    // pickup_address NOT NULL ve istatistik için kalır; saklama süresi KVKK belgesinde.
+    await deps.db
+      .updateTable('rides')
+      .set({ notes: null, dropoff_address: null, dropoff_location: null })
+      .where('stand_id', '=', id)
+      .execute();
     log.info({ standId: id }, 'durak anonimleştirildi');
     res.json({ ok: true, data: { id: row.id, status: row.status, anonymized: true } });
   });
