@@ -4,12 +4,12 @@ import { toApiResult, type ApiResult } from '@/lib/api-result';
 import { API_URL } from './config';
 
 export async function request<T>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
-  opts: { body?: unknown; token?: string | null } = {},
+  opts: { body?: unknown; token?: string | null; timeoutMs?: number } = {},
 ): Promise<ApiResult<T>> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? HTTP_TIMEOUT_MS);
   try {
     const res = await fetch(`${API_URL}${path}`, {
       method,

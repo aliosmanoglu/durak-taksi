@@ -13,6 +13,7 @@ import { io as connect, type Socket } from 'socket.io-client';
 import request from 'supertest';
 import { inject } from 'vitest';
 import { createApp } from '../../src/app';
+import { createGracefulShutdown, type GracefulShutdown } from '../../src/lifecycle';
 import { createAuthLimiters } from '../../src/auth/limits';
 import { hashPassword } from '../../src/auth/password';
 import type { AuthDeps } from '../../src/auth/service';
@@ -49,6 +50,12 @@ export type StartTestAppOptions = {
   redisAdapter?: boolean;
   /** Faz 3: ride servisini kurar (verilmezse ride event'leri kapalı; Faz 1–2 testleri böyle koşar). */
   scheduler?: DispatchScheduler;
+  /**
+   * Faz 5 enjeksiyon noktaları (backend uygulaması bitince adları burada tek yerde ayarlanır):
+   * createApp / createRealtime seçeneklerine eklenir (hız sınırı override'ı, metrikler, push kuyruğu vb.).
+   */
+  appExtras?: Record<string, unknown>;
+  realtimeExtras?: Record<string, unknown>;
 };
 
 export async function startTestApp(opts: StartTestAppOptions = {}) {
@@ -75,16 +82,24 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   const { io, realtime, rides, attach } = createRealtime(deps, log, {
     corsOrigin: '*',
     presence,
+    // Faz 5: server.ts ile aynı — socket olay/handshake hız sınırları Redis üzerinde (override: opts.realtimeExtras.rateLimits).
+    redis,
+    trustProxy: 'loopback',
     rides: opts.scheduler
       ? (sink) => createRideService({ db, redis, log, sink, scheduler: opts.scheduler! })
       : undefined,
     adapter: adapterClients ? createAdapter(adapterClients[0], adapterClients[1]) : undefined,
-  });
+    ...opts.realtimeExtras,
+  } as Parameters<typeof createRealtime>[2]);
   // Adapter aboneliklerini namespace oluşturulurken (createRealtime içinde) kuyruğa alır; ioredis komutları
   // sırayla işler. Bu PING döndüğünde abonelikler etkindir: ilk node'lar arası yayın kaybolmaz.
   if (adapterClients) await adapterClients[1].ping();
+  let shutdownCtl: GracefulShutdown | undefined;
   const app = createApp({
     auth: deps,
+    isShuttingDown: () => shutdownCtl?.isShuttingDown() ?? false,
+    // /metrics tokensız her ortamda 404'tür; testler okuyabilsin diye varsayılan açık (token/404 testleri ezer).
+    metricsAllowAnon: true,
     realtime,
     presence,
     rides,
@@ -97,7 +112,8 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
       { name: 'postgres', check: async () => void (await pool.query('SELECT 1')) },
       { name: 'redis', check: async () => void (await redis.ping()) },
     ],
-  });
+    ...opts.appExtras,
+  } as Parameters<typeof createApp>[0]);
 
   const httpServer: Server = createServer(app);
   attach(httpServer);
@@ -114,6 +130,8 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
       get: (path: string) => request(url).get(path).set('X-Forwarded-For', ip),
       post: (path: string) => request(url).post(path).set('X-Forwarded-For', ip),
       patch: (path: string) => request(url).patch(path).set('X-Forwarded-For', ip),
+      put: (path: string) => request(url).put(path).set('X-Forwarded-For', ip),
+      delete: (path: string) => request(url).delete(path).set('X-Forwarded-For', ip),
     };
   }
 
@@ -180,7 +198,12 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   }
 
   function socket(nsp: '/driver' | '/stand' | '/', token: string | undefined, opts: Parameters<typeof connect>[1] = {}) {
-    const s = connect(`${url}${nsp}`, { reconnection: false, forceNew: true, auth: token ? { token } : {}, ...opts });
+    // Her soket kendi sahte istemci IP'sinden gelir (Faz 5 handshake IP sınırı testler arasında birikmesin);
+    // trustProxy 'loopback' olduğundan X-Forwarded-For'un son girdisi kullanılır.
+    const s = connect(`${url}${nsp}`, {
+      reconnection: false, forceNew: true, auth: token ? { token } : {},
+      extraHeaders: { 'X-Forwarded-For': randomIp() }, ...opts,
+    });
     sockets.add(s);
     return s;
   }
@@ -219,8 +242,60 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     created.stands.clear();
   }
 
+  let shutDown = false;
+  let exitCode: Promise<number> | undefined;
+  /**
+   * server.ts'in graceful shutdown'u (createGracefulShutdown): /ready 503 → drain → http close → io.close.
+   * `process.exit` yerine çıkış kodu döner (0 = temiz, 1 = zaman aşımı). Tekrar çağrı aynı sözü döndürür.
+   */
+  function shutdown(o: { drainMs: number; timeoutMs: number }): Promise<number> {
+    if (exitCode) return exitCode;
+    shutDown = true;
+    exitCode = new Promise<number>((resolve) => {
+      shutdownCtl = createGracefulShutdown({
+        log, drainMs: o.drainMs, timeoutMs: o.timeoutMs, httpServer, io,
+        closeResources: async () => undefined, // test close() kaynakları kapatır
+        exit: resolve,
+      });
+      void shutdownCtl.shutdown('TEST');
+    });
+    return exitCode;
+  }
+
+  let killed = false;
+  /**
+   * Sert node kaybı: süreç ölmüş gibi TCP bağlantıları kesilir, adapter'ın Redis bağlantıları düşer
+   * (ölü node fetchSockets/Pub-Sub isteklerine yanıt vermez). Socket.io'ya düzgün kapanış yaptırılmaz.
+   */
+  function kill() {
+    killed = true;
+    // Ölü süreç handler çalıştırmaz: kopma dinleyicilerini (afterStandClose vb.) sök, yoksa bağlantısı kesilmiş
+    // adapter'a yazıp unhandled rejection üretirler (yalnızca süreç-içi simülasyon artefaktı).
+    for (const nsp of io._nsps.values()) for (const sock of nsp.sockets.values()) sock.removeAllListeners();
+    for (const c of adapterClients ?? []) c.disconnect();
+    // WebSocket'e yükseltilmiş bağlantılar http sunucusunun takibinde değildir: TCP soketlerini doğrudan yok et.
+    for (const c of Object.values((io.engine as unknown as { clients: object }).clients) as {
+      transport?: { socket?: { terminate?: () => void } };
+      request?: { socket?: { destroy(): void } };
+    }[]) {
+      c.transport?.socket?.terminate?.(); // websocket
+      c.request?.socket?.destroy(); // polling
+    }
+    httpServer.closeAllConnections();
+    httpServer.close();
+  }
+
   async function close() {
     await cleanup();
+    if (killed) {
+      await Promise.allSettled([db.destroy(), redis.quit()]);
+      return;
+    }
+    if (shutDown) {
+      await exitCode;
+      await Promise.allSettled([db.destroy(), redis.quit(), ...(adapterClients ?? []).map((c) => c.quit())]);
+      return;
+    }
     await new Promise<void>((r) => io.close(() => r()));
     await new Promise<void>((r) => httpServer.close(() => r()));
     await Promise.allSettled([db.destroy(), redis.quit(), ...(adapterClients ?? []).map((c) => c.quit())]);
@@ -230,6 +305,6 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     url, deps, db, pool, redis, presence, realtime, rides, io, http,
     registerDriver, registerStand, approvedDriver, approvedStand,
     adminToken, adminAction, loginDriver, loginStand,
-    socket, connectOk, connectError, cleanup, close,
+    socket, connectOk, connectError, cleanup, close, kill, shutdown, httpServer,
   };
 }

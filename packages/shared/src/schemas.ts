@@ -42,7 +42,15 @@ export const rideCreateSchema = z.object({
   dropoff: latLngSchema.optional(),
   dropoffAddress: z.string().max(300).optional(),
   notes: z.string().max(280).optional(),
+  /** İdempotency: aynı durak + aynı kimlik tek ride üretir; ack zaman aşımında aynı kimlikle yeniden denenir. */
+  clientRequestId: z.uuid().optional(),
 });
+
+/** `PUT /me/push-token` gövdesi. */
+export const pushTokenSchema = z.object({
+  token: z.string().max(200).regex(/^Expo(nent)?PushToken\[[^\]\s]+\]$/),
+});
+export type PushTokenInput = z.infer<typeof pushTokenSchema>;
 
 export const rideCancelSchema = z.object({
   rideId: z.uuid(),

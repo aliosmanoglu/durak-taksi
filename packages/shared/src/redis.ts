@@ -13,6 +13,10 @@ export const redisKeys = {
   rideCandidates: (rideId: string) => `dn:ride:${rideId}:candidates`,
   rideExcluded: (rideId: string) => `dn:ride:${rideId}:excluded`,
   standActiveRides: (standId: string) => `dn:stand:${standId}:active_rides`,
+  /** Socket olay hız sınırı sayacı (sabit pencere). */
+  eventRateLimit: (event: string, accountId: string) => `dn:ratelimit:ev:${event}:${accountId}`,
+  /** Worker sweeper'ının son tik zamanı (epoch ms, STRING); worker /ready tazeliği için. */
+  sweeperLastTick: 'dn:worker:sweeper:last_tick',
   /** Uzlaştırıcı işareti (`kind`: `driver` | `ride`): bozukluk ilk görüldüğünde konur, ikinci turda onarılır. TTL'li. */
   reconcileSuspect: (kind: string, id: string) => `dn:reconcile:suspect:${kind}:${id}`,
 } as const;
@@ -120,7 +124,63 @@ export type DispatchJobData = { rideId: string; searchVersion: number; wave: num
 export type ReminderJobData = { rideId: string; searchVersion: number; n: number };
 
 /** Kuyruk adları. */
-export const QUEUES = { dispatch: 'dispatch', reminder: 'reminder', nearby: 'nearby', reconcile: 'reconcile' } as const;
+export const QUEUES = {
+  dispatch: 'dispatch',
+  reminder: 'reminder',
+  nearby: 'nearby',
+  reconcile: 'reconcile',
+  push: 'push',
+  pushReceipts: 'push-receipts',
+} as const;
+
+/** Expo push (Faz 5). Push yalnızca bildirimdir; kabul her zaman `ride_accept` ile yapılır. */
+export const PUSH_DATA_TYPES = ['ride_requested', 'account_suspended'] as const;
+export type PushDataType = (typeof PUSH_DATA_TYPES)[number];
+
+export const PUSH = {
+  /** Android bildirim kanalı (HIGH, ses). */
+  ANDROID_CHANNEL: 'rides',
+  /** Varsayılan TTL (sn); `PUSH_TTL_S` ezer. */
+  TTL_S: 300,
+  /** Makbuz (receipt) kontrol gecikmesi (sn); `PUSH_RECEIPT_DELAY_S` ezer. */
+  RECEIPT_DELAY_S: 900,
+  /** Expo `chunkPushNotifications` ile uyumlu toplu gönderim boyutu. */
+  CHUNK_SIZE: 100,
+} as const;
+
+/** `push` kuyruğu job verisi (API token'ı iş verisine alır; `expo-server-sdk` yalnızca worker'dadır). */
+export type PushJobData = { type: 'account_suspended'; token: string };
+
+type Limit = { limit: number; windowMs: number };
+const perMin = (limit: number): Limit => ({ limit, windowMs: 60_000 });
+
+/** Hız sınırı sabit pencereleri (`limit` istek / `windowMs`). Varsayılanlar `RATE_LIMIT_*` env ile ezilir. */
+export const RATE_LIMITS = {
+  /** REST genel (IP); /health, /ready, /metrics hariç. */
+  restIp: perMin(600),
+  /** REST kimlikli (hesap). */
+  restAccount: perMin(240),
+  /** PUT /me/push-token (hesap). */
+  pushTokenPut: { limit: 20, windowMs: 600_000 } as Limit,
+  /** Socket handshake (IP). */
+  socketHandshakeIp: perMin(600),
+  /** Socket olayları (hesap); anahtar `redisKeys.eventRateLimit(event, accountId)`. Aşılırsa ack `RATE_LIMITED`. */
+  events: {
+    ride_create: perMin(10),
+    ride_accept: perMin(30),
+    ride_decline: perMin(60),
+    ride_cancel: perMin(30),
+    ride_complete: perMin(30),
+    ride_driver_cancel: perMin(10),
+    driver_go_online: perMin(20),
+    driver_go_offline: perMin(20),
+    session_sync_request: perMin(20),
+    auth_refresh: perMin(10),
+  },
+  /** Socket.IO `maxHttpBufferSize` (bayt). */
+  MAX_HTTP_BUFFER_BYTES: 100_000,
+} as const;
+export type RateLimitedEvent = keyof typeof RATE_LIMITS.events;
 
 /** `dn:ride:{id}` hash alan adları. `status` değerleri `RideStatus`. */
 export const RIDE_HASH = {

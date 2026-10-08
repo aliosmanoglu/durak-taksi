@@ -36,6 +36,7 @@ import {
   type RidesState,
 } from '../lib/rides';
 import { isErrorCode } from '../lib/api-result';
+import { PENDING_CREATE_TTL_MS } from '../lib/create-request';
 import { T } from '../lib/texts';
 import { announce, noteAlert, pushToast, updateRides, useStore } from '../store';
 import { ACK_TIMEOUT_MS, API_URL } from './config';
@@ -45,7 +46,6 @@ import { endSession, getAccessToken, onAuthed, onEnded, onToken, refreshAccess }
 
 const SYNC_WAIT_MS = 5_000;
 const NEARBY_STALE_MS = 25_000;
-const PENDING_CREATE_TTL_MS = 60_000;
 
 let socket: Socket | null = null;
 let detailTimer: ReturnType<typeof setTimeout> | undefined;

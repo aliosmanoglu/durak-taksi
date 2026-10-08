@@ -6,6 +6,13 @@ import {
   type LatLng,
   type RideCreateResult,
 } from '@duraknet/shared';
+import {
+  CREATE_AUTO_RETRY_DELAY_MS,
+  createSignature,
+  isRetryOfPending,
+  requestIdFor,
+  shouldAutoRetry,
+} from '../lib/create-request';
 import { errorText, T } from '../lib/texts';
 import { applyCreated, closeLocal, setUnknown } from '../lib/rides';
 import { pushRecent } from '../lib/recent-addresses';
@@ -27,21 +34,44 @@ export type CreateInput = {
 
 export type CreateOutcome = { ok: true } | { ok: false; message: string; field?: 'validation' };
 
-export async function createRide(input: CreateInput): Promise<CreateOutcome> {
-  const st = useStore.getState();
-  if (st.conn !== 'connected') return { ok: false, message: T.form.offline };
-  const lockLeft = st.createLockUntil - Date.now();
-  if (lockLeft > 0) return { ok: false, message: T.form.locked(Math.ceil(lockLeft / 1000)) };
-
-  const payload = {
+function buildPayload(input: CreateInput) {
+  return {
     pickup: input.pickup,
     pickupAddress: input.pickupAddress.trim(),
     ...(input.dropoff ? { dropoff: input.dropoff } : {}),
     ...(input.dropoffAddress?.trim() ? { dropoffAddress: input.dropoffAddress.trim() } : {}),
     ...(input.notes ? { notes: input.notes } : {}),
   };
+}
+
+/**
+ * Bu içerik, ack'i zaman aşımına uğramış taze bir gönderimin aynısı mı? Öyleyse yeniden gönderim güvenlidir
+ * (aynı `clientRequestId`; sunucu ikinci çağrı açmaz) ve yinelenen-çağrı kilidi uygulanmaz.
+ */
+export function isSafeRetry(input: CreateInput): boolean {
+  return isRetryOfPending(useStore.getState().pendingCreate, createSignature(buildPayload(input)), Date.now());
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export async function createRide(input: CreateInput): Promise<CreateOutcome> {
+  const st = useStore.getState();
+  if (st.conn !== 'connected') return { ok: false, message: T.form.offline };
+  const payload = buildPayload(input);
+  const signature = createSignature(payload);
+  const { id: clientRequestId, retry } = requestIdFor(st.pendingCreate, signature, Date.now());
+  const lockLeft = st.createLockUntil - Date.now();
+  if (!retry && lockLeft > 0) return { ok: false, message: T.form.locked(Math.ceil(lockLeft / 1000)) };
+
   const knownIds = Object.keys(st.ridesState.rides);
-  const res = await emitAck<RideCreateResult>(STAND_EVENTS.rideCreate, payload);
+  const wire = { ...payload, clientRequestId };
+  let res = await emitAck<RideCreateResult>(STAND_EVENTS.rideCreate, wire);
+  // Ack kaybı: AYNI kimlikle sınırlı otomatik yeniden deneme (sunucu idempotent; çift çağrı açılmaz).
+  for (let attempt = 0; !res.ok && shouldAutoRetry(res.code, attempt, useStore.getState().conn === 'connected'); attempt++) {
+    await sleep(CREATE_AUTO_RETRY_DELAY_MS);
+    if (useStore.getState().conn !== 'connected') break;
+    res = await emitAck<RideCreateResult>(STAND_EVENTS.rideCreate, wire);
+  }
 
   if (res.ok) {
     const parsed = rideCreateResultSchema.safeParse(res.data);
@@ -63,10 +93,19 @@ export async function createRide(input: CreateInput): Promise<CreateOutcome> {
   }
 
   if (res.code === 'TIMEOUT') {
-    // Sonuç bilinmiyor: yinelenen çağrıyı önlemek için 15 sn kilit; liste senkronla doğrulanır.
+    // Sonuç bilinmiyor: içerik değişirse yinelenen çağrıyı önlemek için 15 sn kilit; aynı içerik aynı kimlikle
+    // yeniden gönderilebilir. Liste senkronla doğrulanır.
     useStore.getState().set({
       createLockUntil: Date.now() + CREATE_LOCK_MS,
-      pendingCreate: { pickupAddress: payload.pickupAddress, pickup: payload.pickup, knownIds, sentAtMs: Date.now() },
+      pendingCreate: {
+        pickupAddress: payload.pickupAddress,
+        pickup: payload.pickup,
+        // Yeniden denemede ilk gönderimdeki ride listesi korunur (arada oluşan ride bilinmeyen sayılsın).
+        knownIds: retry && st.pendingCreate ? st.pendingCreate.knownIds : knownIds,
+        sentAtMs: Date.now(),
+        clientRequestId,
+        signature,
+      },
     });
     requestSync();
     return { ok: false, message: T.form.timeout };

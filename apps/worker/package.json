@@ -14,9 +14,11 @@
     "@duraknet/shared": "workspace:*",
     "@socket.io/redis-emitter": "^5.1.0",
     "bullmq": "^6.3.9",
+    "expo-server-sdk": "^7.2.0",
     "ioredis": "^6.0.0",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
     "zod": "^4.6.5"
   },
   "devDependencies": {
