@@ -31,6 +31,7 @@ export const driverRegisterSchema = z.object({
   vehicleModel: z.string().trim().max(80).optional(),
   vehicleColor: z.string().trim().max(30).optional(),
   homeStandId: z.uuid().optional(),
+  kvkkAccepted: z.literal(true),
 });
 export type DriverRegisterInput = z.infer<typeof driverRegisterSchema>;
 
@@ -47,6 +48,7 @@ export const standRegisterSchema = z.object({
     .toLowerCase()
     .regex(/^[a-z0-9._-]{3,60}$/, 'Kullanıcı adı 3-60 karakter: harf, rakam, . _ -'),
   password: passwordSchema,
+  kvkkAccepted: z.literal(true),
 });
 export type StandRegisterInput = z.infer<typeof standRegisterSchema>;
 

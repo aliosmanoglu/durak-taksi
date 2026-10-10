@@ -17,6 +17,8 @@ export interface StandsTable {
   status: Generated<AccountStatus>;
   initial_radius_m: Generated<number>;
   max_radius_m: Generated<number>;
+  kvkk_accepted_at: Timestamp | null;
+  kvkk_version: string | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
 }
@@ -35,6 +37,8 @@ export interface DriversTable {
   vehicle_color: string | null;
   push_token: string | null;
   approved_at: Timestamp | null;
+  kvkk_accepted_at: Timestamp | null;
+  kvkk_version: string | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
 }

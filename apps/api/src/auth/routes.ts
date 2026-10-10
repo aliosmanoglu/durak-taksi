@@ -45,7 +45,7 @@ export function authRoutes(
   r.post('/auth/logout', requireAuth(deps), async (_req, res) => {
     const claims = authOf(res);
     const role = await logoutAllDevices(deps, claims);
-    realtime.disconnectAccount(role, claims.sub);
+    if (role !== 'admin') realtime.disconnectAccount(role, claims.sub);
     // Faz 3 kararı (a): busy şoför (eşleşmiş ride) düşürülmez; yeniden girişte session_sync.activeRide ile devam eder.
     if (role === 'driver') await presence?.forceOfflineUnlessBusy(claims.sub);
     res.json({ ok: true });

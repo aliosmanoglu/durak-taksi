@@ -1,6 +1,6 @@
 // E2 Kayıt (Register.dc.html). Minimal; `homeStandId` yok (tasarım S9). Başarıda E3; otomatik giriş yok.
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, View, type TextInputProps } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View, type TextInputProps } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RATE_LIMIT_FALLBACK_MS } from '@/lib/constants';
@@ -22,9 +22,10 @@ const EMPTY: RegisterForm = {
   licenseNo: '',
   vehicleModel: '',
   vehicleColor: '',
+  kvkk: false,
 };
 
-const FIELDS: { key: keyof RegisterForm; label: string; props: TextInputProps }[] = [
+const FIELDS: { key: Exclude<keyof RegisterForm, 'kvkk'>; label: string; props: TextInputProps }[] = [
   { key: 'fullName', label: T.register.fullName, props: { autoComplete: 'name', textContentType: 'name', autoCapitalize: 'words' } },
   { key: 'phone', label: T.register.phone, props: { keyboardType: 'phone-pad', placeholder: T.login.phonePlaceholder, autoComplete: 'tel' } },
   { key: 'password', label: T.register.password, props: { secureTextEntry: true, autoCapitalize: 'none', autoComplete: 'new-password', textContentType: 'newPassword' } },
@@ -41,7 +42,7 @@ export default function RegisterScreen() {
   const [banner, setBanner] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const set = (key: keyof RegisterForm, v: string) =>
+  const set = (key: Exclude<keyof RegisterForm, 'kvkk'>, v: string) =>
     setForm((f) => ({ ...f, [key]: key === 'phone' ? formatPhoneInput(v) : key === 'plate' ? v.toUpperCase() : v }));
 
   async function submit() {
@@ -98,6 +99,44 @@ export default function RegisterScreen() {
                 {...f.props}
               />
             ))}
+            <View style={{ gap: 6 }}>
+              <Pressable
+                accessibilityRole="checkbox"
+                accessibilityLabel={T.register.kvkkLabel}
+                accessibilityState={{ checked: form.kvkk, disabled: submitting }}
+                disabled={submitting}
+                onPress={() => setForm((f) => ({ ...f, kvkk: !f.kvkk }))}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 56 }}
+              >
+                <View
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    borderWidth: 2,
+                    borderColor: errors.kvkk ? colors.red : colors.outline,
+                    backgroundColor: form.kvkk ? colors.green : 'transparent',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {form.kvkk ? (
+                    <Txt bold size={22} color={colors.greenInk}>
+                      ✓
+                    </Txt>
+                  ) : null}
+                </View>
+                <Txt size={18} color={colors.textBody} style={{ flex: 1 }}>
+                  {T.register.kvkkLabel}
+                </Txt>
+              </Pressable>
+              <Button label={T.register.kvkkRead.toUpperCase()} variant="secondary" height={56} fontSize={18} onPress={() => router.push('/kvkk')} />
+              {errors.kvkk ? (
+                <Txt size={16} color={colors.redSoft} accessibilityLiveRegion="polite">
+                  {errors.kvkk}
+                </Txt>
+              ) : null}
+            </View>
             <Button
               label={submitting ? T.register.submitting : T.register.submit}
               variant={submitting ? 'wait' : 'light'}

@@ -51,6 +51,9 @@ export const T = {
     errPlate: 'Plakayı kontrol edin (ör. 34 ABC 123).',
     errLicenseNo: 'Ruhsat numarasını kontrol edin.',
     errTooLong: 'Bu alan çok uzun.',
+    kvkkLabel: 'KVKK aydınlatma metnini okudum, kabul ediyorum.',
+    kvkkRead: 'Metni oku',
+    errKvkk: 'Devam etmek için KVKK onayı gerekir.',
   },
   pending: {
     title: 'Hesabınız onay bekliyor',

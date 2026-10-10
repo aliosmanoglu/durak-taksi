@@ -4,3 +4,4 @@ export * from './schemas';
 export * from './auth';
 export * from './redis';
 export * from './ride-machine';
+export * from './reports';
