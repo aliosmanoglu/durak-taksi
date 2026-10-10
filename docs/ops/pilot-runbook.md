@@ -23,8 +23,8 @@
 Durak görevlisi: çağrı ne kadar sürede doldu, adres bulma sorunları, panel uyarıları anlaşılır mı. Şoför: bildirim geldi mi, ses/titreşim, navigasyon açıldı mı, pil tüketimi.
 
 ## Dikkat edilecekler (kalite denetimi bulguları)
-- **Anonimleştirme geri dönüşsüzdür ve açık çağrıları kapatır:** durak anonimleştirilince açık çağrıları `stand_suspended` ile iptal edilir; şoför anonimleştirilince eşleşmiş çağrısı yeniden aramaya döner. Önce açık çağrı olmadığını panelden kontrol et. Durağın ride kayıtlarında `notes`, varış adresi ve konumu silinir; `pickup_address` istatistik için kalır (saklama süresi kararı: KVKK taslağı).
+- **Anonimleştirme geri dönüşsüzdür ve açık çağrıları kapatır:** durak anonimleştirilince açık çağrıları `stand_suspended` ile iptal edilir; şoför anonimleştirilince eşleşmiş çağrısı yeniden aramaya döner. Önce açık çağrı olmadığını panelden kontrol et. Durağın ride kayıtlarında `notes`, varış adresi ve konumu silinir; alış adresi de boşaltılır (alış konumu durağın konumuna çekilir); zaman damgaları ve durumlar rapor için kalır.
 - **Anonimleştirilmiş hesap onaylanamaz** (`approve` 404 döner).
-- **Admin oturumu iptali:** admin çıkışı yalnızca yereldir; refresh token 30 gün geçerli kalır. Şüphede `ADMIN_TOKEN_VERSION` artırıp API'yi yeniden başlat. Admin paneline ortak cihazdan girme.
+- **Admin oturumu iptali:** admin "Çıkış" `POST /auth/logout` çağırır; Redis sayacı (`dn:admin:token_version`) artar ve tüm admin access/refresh token'ları geçersiz olur (yeniden başlatma gerekmez; sayaç Redis verisi silinirse sıfırlanır — o durumda `ADMIN_TOKEN_VERSION` ile de artırılabilir). Redis erişilemezse admin istekleri reddedilir.
 - **Nominatim:** `NOMINATIM_PASSWORD` varsayılanını değiştir, 8088 portunu doğrudan dışarı açma (yalnızca TLS'li ters proxy).
 - **Tutarlılık raporu** salt okunurdur; tek seferlik `status_mismatch` yarış olabilir, 2 dk sonra tekrar bak.

@@ -196,11 +196,6 @@ export type LogoutOutcome = { ok: true } | { ok: false; kind: 'network' | 'serve
 
 /** Tüm cihazlardan çıkış (`POST /auth/logout`). Ağ hatasında oturum AÇIK kalır; kullanıcı tekrar dener. */
 export async function logout(): Promise<LogoutOutcome> {
-  if (useStore.getState().role === 'admin') {
-    // Yönetici oturumu sunucuda iptal edilemez (ADMIN_TOKEN_VERSION); yalnızca bu cihazdan çıkılır.
-    endSession();
-    return { ok: true };
-  }
   if (!access) {
     const out = await refreshAccess();
     if (out === 'rejected') return { ok: true }; // oturum zaten kapandı

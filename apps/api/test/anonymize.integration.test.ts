@@ -168,7 +168,7 @@ describe('durak anonimleştirme', () => {
 
 
 describe('anonimleştirme sonrası (denetim bulguları)', () => {
-  it('durak anonimleştirilince ride notu ve varış adresi silinir, pickup_address kalır', async () => {
+  it('durak anonimleştirilince ride notu, varış ve alış adresi silinir', async () => {
     const stand = await t.registerStand();
     standIds.push(stand.id);
     const now = new Date().toISOString();
@@ -178,7 +178,7 @@ describe('anonimleştirme sonrası (denetim bulguları)', () => {
     const row = await t.db.selectFrom('rides').select(['notes', 'dropoff_address', 'pickup_address']).where('id', '=', ride.id).executeTakeFirstOrThrow();
     expect(row.notes).toBeNull();
     expect(row.dropoff_address).toBeNull();
-    expect(row.pickup_address).toBeTruthy();
+    expect(row.pickup_address).toBe('');
   });
 
   it('anonimleştirilmiş şoför ve durak tekrar onaylanamaz (404)', async () => {

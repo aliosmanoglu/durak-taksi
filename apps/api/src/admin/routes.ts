@@ -192,13 +192,12 @@ export function adminRoutes(deps: AuthDeps, realtime: Realtime, presence?: Prese
       .returning(['id', 'status'])
       .executeTakeFirst();
     if (!row) throw errors.notFound();
-    // Serbest metin kişisel veri içerebilir (not, varış adresi): durağın ride kayıtlarından silinir.
-    // pickup_address NOT NULL ve istatistik için kalır; saklama süresi KVKK belgesinde.
-    await deps.db
-      .updateTable('rides')
-      .set({ notes: null, dropoff_address: null, dropoff_location: null })
-      .where('stand_id', '=', id)
-      .execute();
+    // Serbest metin ve adresler kişisel veri içerebilir (not, alış/varış adresi): durağın ride kayıtlarından
+    // silinir (şimdilik karar: saklama yok). pickup_* NOT NULL olduğundan boş adres ve durağın konumu yazılır;
+    // zaman damgaları ve durumlar rapor için kalır.
+    await sql`UPDATE rides r SET notes = NULL, dropoff_address = NULL, dropoff_location = NULL,
+      pickup_address = '', pickup_location = s.location
+      FROM stands s WHERE r.stand_id = s.id AND s.id = ${id}`.execute(deps.db);
     log.info({ standId: id }, 'durak anonimleştirildi');
     res.json({ ok: true, data: { id: row.id, status: row.status, anonymized: true } });
   });

@@ -14,7 +14,20 @@ import { issueTokens, verifyToken, type TokenClaims, type TokenSecrets } from '.
 
 export const ADMIN_ID = 'admin';
 
-export type AdminCredentials = { username: string; passwordHash: string; tokenVersion: number };
+/** Yönetici oturumunu çalışma zamanında iptal etmek için paylaşılan sayaç (Redis); yoksa yalnızca env sürümü geçerlidir. */
+export type AdminSessionVersion = { get(): Promise<number>; bump(): Promise<number> };
+
+export type AdminCredentials = {
+  username: string;
+  passwordHash: string;
+  tokenVersion: number;
+  sessionVersion?: AdminSessionVersion;
+};
+
+/** Etkin yönetici token_version'ı: env sürümü + çalışma zamanı sayacı. Redis hatasında istek reddedilir (fail-closed). */
+async function adminTokenVersion(deps: AuthDeps): Promise<number> {
+  return deps.admin.tokenVersion + (deps.admin.sessionVersion ? await deps.admin.sessionVersion.get() : 0);
+}
 
 export type AuthDeps = { db: Db; secrets: TokenSecrets; admin: AdminCredentials };
 
@@ -24,7 +37,7 @@ const tableOf = (role: 'driver' | 'stand') => (role === 'driver' ? 'drivers' : '
 
 export async function getAccountState(deps: AuthDeps, role: Role, id: string): Promise<AccountState | null> {
   if (role === 'admin') {
-    return id === ADMIN_ID ? { status: 'approved', tokenVersion: deps.admin.tokenVersion } : null;
+    return id === ADMIN_ID ? { status: 'approved', tokenVersion: await adminTokenVersion(deps) } : null;
   }
   const row = await deps.db
     .selectFrom(tableOf(role))
@@ -104,7 +117,7 @@ export async function login(
         id: ADMIN_ID,
         password_hash: deps.admin.passwordHash,
         status: 'approved',
-        token_version: deps.admin.tokenVersion,
+        token_version: await adminTokenVersion(deps),
       };
     }
   } else if (input.role === 'driver') {
@@ -144,11 +157,16 @@ export async function refresh(deps: AuthDeps, refreshToken: string): Promise<Aut
 
 /**
  * Hesabın TÜM oturumlarını (tüm cihazlarda) kapatır: token_version + 1 → mevcut access/refresh token'lar geçersiz.
- * Yönetici tek hesaptır ve oturumu ortam değişkeniyle (ADMIN_TOKEN_VERSION) iptal edilir; burada desteklenmez.
+ * Yönetici: paylaşılan Redis sayacı artar (tüm admin token'ları geçersiz); sayaç yoksa (`sessionVersion`
+ * verilmemiş) yalnızca ADMIN_TOKEN_VERSION ile iptal edilebilir ve 400 döner.
  */
-export async function logoutAllDevices(deps: AuthDeps, claims: TokenClaims): Promise<'driver' | 'stand'> {
+export async function logoutAllDevices(deps: AuthDeps, claims: TokenClaims): Promise<'driver' | 'stand' | 'admin'> {
   if (claims.role === 'admin') {
-    throw errors.validation('Yönetici oturumu ADMIN_TOKEN_VERSION ortam değişkeniyle iptal edilir');
+    if (!deps.admin.sessionVersion) {
+      throw errors.validation('Yönetici oturumu ADMIN_TOKEN_VERSION ortam değişkeniyle iptal edilir');
+    }
+    await deps.admin.sessionVersion.bump();
+    return 'admin';
   }
   if (claims.role === 'driver') {
     // Çıkışta push token da silinir: çıkış yapmış cihaza çağrı bildirimi gitmesin.

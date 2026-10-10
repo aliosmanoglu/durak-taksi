@@ -4,6 +4,7 @@ import { Redis } from 'ioredis';
 import pino from 'pino';
 import { RedisStore, type RedisReply } from 'rate-limit-redis';
 import { createApp } from './app';
+import { redisAdminSession } from './auth/admin-session';
 import { createAuthLimiters } from './auth/limits';
 import type { AuthDeps } from './auth/service';
 import { loadConfig, rateLimitOverridesOf } from './config';
@@ -43,6 +44,7 @@ const auth: AuthDeps = {
     username: config.ADMIN_USERNAME,
     passwordHash: config.ADMIN_PASSWORD_HASH,
     tokenVersion: config.ADMIN_TOKEN_VERSION,
+    sessionVersion: redisAdminSession(redis),
   },
 };
 

@@ -3,6 +3,8 @@
 
 export const redisKeys = {
   geoAvailable: 'dn:geo:drivers:available',
+  /** Yönetici oturum sayacı (INCR, TTL yok): etkin token_version = ADMIN_TOKEN_VERSION + bu değer. */
+  adminTokenVersion: 'dn:admin:token_version',
   heartbeat: 'dn:drivers:heartbeat',
   driver: (driverId: string) => `dn:driver:${driverId}`,
   driverRequests: (driverId: string) => `dn:driver:${driverId}:requests`,
