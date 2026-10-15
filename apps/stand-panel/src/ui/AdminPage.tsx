@@ -1,11 +1,15 @@
 // Yönetici: Raporlar (günlük özet + tutarlılık denetimi + CSV). Admin oturumunda çağrı soketi açılmaz.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MATCH_TARGET_SECONDS, REPORT_MAX_DAYS, type ConsistencyReport, type DailyReport } from '@duraknet/shared';
 import type { ApiResult } from '../lib/api-result';
 import { formatElapsed } from '../lib/format';
 import {
   csvFilename, dailyReportToCsv, defaultRange, formatRate, formatSeconds, meetsTarget, reportPath, validateRange,
 } from '../lib/reports';
+import {
+  approvePath, formatCreatedAt, pendingListPath, removeById, vehicleLabel,
+  type PendingDriver, type PendingKind, type PendingStand,
+} from '../lib/pending';
 import { T } from '../lib/texts';
 import { TA } from '../lib/texts-admin';
 import { downloadText } from '../services/download';
@@ -99,6 +103,151 @@ function ConsistencyBox() {
   );
 }
 
+function pendingFailText(r: Extract<ApiResult<unknown>, { ok: false }>, fallback: string): string {
+  if (r.kind === 'network') return TA.pending.errNetwork;
+  if (r.code === 'FORBIDDEN') return TA.pending.errForbidden;
+  if (r.code === 'RATE_LIMITED') return T.form.err.rateLimited;
+  return fallback;
+}
+
+function PendingAccounts() {
+  const [drivers, setDrivers] = useState<PendingDriver[]>([]);
+  const [stands, setStands] = useState<PendingStand[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const fetchLists = useCallback(
+    () => Promise.all([
+      apiAuthed<PendingDriver[]>('GET', pendingListPath('drivers')),
+      apiAuthed<PendingStand[]>('GET', pendingListPath('stands')),
+    ]),
+    [],
+  );
+
+  function apply([d, s]: Awaited<ReturnType<typeof fetchLists>>) {
+    setLoading(false);
+    if (d.ok) setDrivers(d.data);
+    if (s.ok) setStands(s.data);
+    if (d.ok && s.ok) setLoaded(true);
+    const bad = !d.ok ? d : !s.ok ? s : null;
+    setError(bad ? pendingFailText(bad, TA.pending.errList) : null);
+  }
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    apply(await fetchLists());
+  }
+
+  useEffect(() => {
+    let alive = true;
+    void fetchLists().then((res) => {
+      if (alive) apply(res);
+    });
+    return () => {
+      alive = false;
+    };
+    // apply yalnızca state setter'lar kullanır
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchLists]);
+
+  async function approve(kind: PendingKind, id: string) {
+    if (approvingId) return;
+    setApprovingId(id);
+    setError(null);
+    const r = await apiAuthed<{ id: string }>('POST', approvePath(kind, id));
+    setApprovingId(null);
+    if (r.ok) {
+      if (kind === 'drivers') setDrivers((l) => removeById(l, id));
+      else setStands((l) => removeById(l, id));
+      return;
+    }
+    if (r.kind === 'http' && r.code === 'NOT_FOUND') {
+      setError(TA.pending.errNotFound);
+      void load();
+      return;
+    }
+    setError(pendingFailText(r, TA.pending.errApprove));
+  }
+
+  const P = TA.pending;
+  const approveBtn = (kind: PendingKind, id: string) => (
+    <Button variant="primary" disabled={approvingId !== null} onClick={() => void approve(kind, id)}>
+      {approvingId === id ? P.approving : P.approve}
+    </Button>
+  );
+  const th = 'p-2';
+  const empty = loaded && drivers.length === 0 && stands.length === 0;
+
+  return (
+    <section aria-labelledby="pending-h" className="space-y-3 rounded-2xl bg-white p-4 shadow dark:bg-slate-800">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 id="pending-h" className="text-xl font-bold">{P.title}</h2>
+        <Button onClick={() => void load()} disabled={loading} className="ml-auto">
+          {loading ? P.loading : P.refresh}
+        </Button>
+      </div>
+      {error && <Banner tone="error" role="alert">{error}</Banner>}
+      {empty && !loading && <p className="text-lg">{P.empty}</p>}
+
+      {drivers.length > 0 && (
+        <div className="overflow-x-auto">
+          <h3 className="mb-1 text-lg font-bold">{P.drivers}</h3>
+          <table className="w-full text-left text-base">
+            <thead>
+              <tr className="border-b-2 border-slate-300">
+                {[P.name, P.phone, P.plate, P.license, P.vehicle, P.createdAt].map((h) => <th key={h} className={th}>{h}</th>)}
+                <th className={th} />
+              </tr>
+            </thead>
+            <tbody>
+              {drivers.map((d) => (
+                <tr key={d.id} className="border-b border-slate-200">
+                  <td className="p-2 font-semibold">{d.fullName}</td>
+                  <td className="p-2">{d.phone}</td>
+                  <td className="p-2 font-mono">{d.plate}</td>
+                  <td className="p-2">{d.licenseNo}</td>
+                  <td className="p-2">{vehicleLabel(d.vehicleModel, d.vehicleColor)}</td>
+                  <td className="p-2">{formatCreatedAt(d.createdAt)}</td>
+                  <td className="p-2">{approveBtn('drivers', d.id)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stands.length > 0 && (
+        <div className="overflow-x-auto">
+          <h3 className="mb-1 text-lg font-bold">{P.stands}</h3>
+          <table className="w-full text-left text-base">
+            <thead>
+              <tr className="border-b-2 border-slate-300">
+                {[P.name, P.phone, P.address, P.username, P.createdAt].map((h) => <th key={h} className={th}>{h}</th>)}
+                <th className={th} />
+              </tr>
+            </thead>
+            <tbody>
+              {stands.map((s) => (
+                <tr key={s.id} className="border-b border-slate-200">
+                  <td className="p-2 font-semibold">{s.name}</td>
+                  <td className="p-2">{s.phone}</td>
+                  <td className="p-2">{s.address || '—'}</td>
+                  <td className="p-2 font-mono">{s.username}</td>
+                  <td className="p-2">{formatCreatedAt(s.createdAt)}</td>
+                  <td className="p-2">{approveBtn('stands', s.id)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function AdminPage() {
   const initial = useMemo(() => defaultRange(new Date()), []);
   const [from, setFrom] = useState(initial.from);
@@ -146,7 +295,9 @@ export function AdminPage() {
         <Button className="ml-auto" onClick={() => void logout()}>{TA.admin.logout}</Button>
       </header>
 
-      <section aria-labelledby="reports-h" className="space-y-3 rounded-2xl bg-white p-4 shadow dark:bg-slate-800">
+      <PendingAccounts />
+
+      <section aria-labelledby="reports-h"className="space-y-3 rounded-2xl bg-white p-4 shadow dark:bg-slate-800">
         <h2 id="reports-h" className="text-xl font-bold">{TA.reports.title}</h2>
         <form
           className="flex flex-wrap items-end gap-3"
