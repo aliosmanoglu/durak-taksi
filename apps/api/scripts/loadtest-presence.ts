@@ -29,8 +29,14 @@
  *       - seen = örnekleme anı − gönderim anı: işlemeyi de içeren ÜST SINIR, ama +≤100 ms örnekleme
  *         çözünürlüğü ve örnekleyicinin kendi Redis gecikmesi eklenir; 50 ms eşiğine karşı karar vermek için kaba.
  *     Bir sonraki gönderime kadar hiç görünmeyen güncelleme "görünmeyen/düşen" sayılır (throttle veya hata).
- *  3. Kesin kanıt Faz 5'te: `driver_location_update` handler'ına prom-client histogramı
- *     (ör. `duraknet_location_update_seconds`) ekleyip /metrics'ten p95 okumak.
+ *  3. KESİN KANIT (Faz 6): `METRICS_URL` verilirse betik, yük öncesi ve sonrası API node'larının /metrics
+ *     çıktısından `duraknet_location_update_seconds` histogramını okur ve farktan sunucu içi p50/p95/p99'u basar
+ *     (kova içi doğrusal interpolasyon; 50 ms bir kova sınırıdır, "≤ 50 ms oranı" ayrıca yazılır). Bu, 1. ve 2.
+ *     maddedeki dolaylı ölçümlerin yerini alan kabul ölçümüdür.
+ *       METRICS_URL    virgülle ayrılmış /metrics adresleri (her API node'u için; ör. http://127.0.0.1:3000/metrics,...)
+ *       METRICS_TOKEN  node'daki `METRICS_TOKEN` ile aynı Bearer token (node'da tanımsızsa METRICS_ALLOW_ANON=true gerekir)
+ *     Yük öncesi taban çizgisi alınır, böylece süreç ömrü boyunca birikmiş eski örnekler sonucu bozmaz; yine de
+ *     ölçüm sırasında node'lara başka konum trafiği gelmemelidir.
  *  Tek istemci süreci 500 socket'i sürer; istemci event loop gecikmesi ölçümlere eklenir.
  */
 import { randomInt } from 'node:crypto';
@@ -67,6 +73,47 @@ const N = Number(env.N ?? 500);
 const DURATION_S = Number(env.DURATION_S ?? 60);
 const INTERVAL_MS = Number(env.INTERVAL_MS ?? 3000);
 const TAG = 'LOADTEST';
+const METRICS_URLS = (env.METRICS_URL ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+const METRICS_TOKEN = env.METRICS_TOKEN;
+const HIST = 'duraknet_location_update_seconds';
+
+// ---- /metrics histogram okuma (sunucu içi gecikme) ----
+/** Tüm URL'lerden histogram kovalarını (le -> kümülatif sayı) toplar; ulaşılamayan URL hata fırlatır. */
+async function scrapeHistogram(): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  for (const url of METRICS_URLS) {
+    const res = await fetch(url, { headers: METRICS_TOKEN ? { authorization: `Bearer ${METRICS_TOKEN}` } : {} });
+    if (!res.ok) throw new Error(`/metrics ${res.status} döndü (${url}); METRICS_TOKEN / METRICS_ALLOW_ANON kontrol edin`);
+    for (const line of (await res.text()).split('\n')) {
+      if (!line.startsWith(`${HIST}_bucket`)) continue;
+      const le = /le="([^"]+)"/.exec(line)?.[1];
+      const val = Number(line.slice(line.lastIndexOf(' ') + 1));
+      if (le === undefined || Number.isNaN(val)) continue;
+      const k = le === '+Inf' ? Infinity : Number(le);
+      out.set(k, (out.get(k) ?? 0) + val);
+    }
+  }
+  return out;
+}
+
+/** Kümülatif kova sayılarından kuantil (kova içinde doğrusal interpolasyon). En büyük sonlu kovanın üstü: Infinity. */
+function bucketQuantile(buckets: Map<number, number>, q: number): number {
+  const bs = [...buckets.entries()].sort((a, b) => a[0] - b[0]);
+  const total = bs.length ? bs[bs.length - 1]![1] : 0;
+  if (!total) return NaN;
+  const rank = q * total;
+  let prevLe = 0;
+  let prevCount = 0;
+  for (const [le, count] of bs) {
+    if (count >= rank) {
+      if (le === Infinity) return Infinity;
+      return count === prevCount ? le : prevLe + ((le - prevLe) * (rank - prevCount)) / (count - prevCount);
+    }
+    prevLe = le;
+    prevCount = count;
+  }
+  return Infinity;
+}
 
 const BASE = { lat: 41.0082, lng: 28.9784 };
 
@@ -127,6 +174,9 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 async function main() {
+  // Sunucu içi histogram taban çizgisi (yük öncesi). Ulaşılamazsa betik yükü başlatmadan hata verir.
+  const metricsBefore = METRICS_URLS.length ? await scrapeHistogram() : null;
+
   // ---- 1) Hesaplar ----
   console.log(`${N} şoför ekleniyor (DB host: ${dbHost})…`);
   for (let i = 0; i < N; i += 100) {
@@ -253,13 +303,34 @@ async function main() {
   } else {
     console.log('REDIS_URL yok: konum güncellemesi ölçülmedi.');
   }
-  console.log(
-    '\nKabul ("p95 işleme < 50 ms"): BU BETİKLE KARARLAŞTIRILAMAZ.\n' +
-      '  - "entry" handler girişine kadarki gecikmedir; Lua/Redis işleme süresini içermez.\n' +
-      '  - "seen" işlemeyi içerir ama ~100 ms örnekleme çözünürlüğü nedeniyle 50 ms eşiği için kaba bir üst sınırdır.\n' +
-      '  - Yukarıdaki değerler yalnızca gösterge ve regresyon karşılaştırması içindir; kesin p95 Faz 5\'te\n' +
-      '    driver_location_update handler\'ına eklenecek prom-client histogramıyla (/metrics) ölçülmelidir.',
-  );
+  if (metricsBefore) {
+    // ---- Sunucu içi gecikme: /metrics histogram farkı (KESİN KANIT) ----
+    const after = await scrapeHistogram();
+    const delta = new Map<number, number>();
+    for (const [le, c] of after) delta.set(le, Math.max(0, c - (metricsBefore.get(le) ?? 0)));
+    const total = delta.get(Infinity) ?? 0;
+    const fmt = (s: number) => (Number.isFinite(s) ? `${(s * 1000).toFixed(1)} ms` : s === Infinity ? '> son kova' : 'NaN');
+    const p50 = bucketQuantile(delta, 0.5);
+    const p95 = bucketQuantile(delta, 0.95);
+    const p99 = bucketQuantile(delta, 0.99);
+    const le50 = delta.get(0.05);
+    console.log(`\n=== Sunucu içi ${HIST} (${METRICS_URLS.length} node, yük süresince) ===`);
+    console.log(`örnek=${total}  p50=${fmt(p50)}  p95=${fmt(p95)}  p99=${fmt(p99)}`);
+    if (le50 !== undefined && total > 0) console.log(`≤ 50 ms oranı: ${((le50 / total) * 100).toFixed(2)}%`);
+    if (total === 0) console.log('UYARI: histogramda yeni örnek yok; METRICS_URL doğru node\'lara mı bakıyor?');
+    else if (total < sent * 0.9) console.log(`UYARI: sunucu örneği (${total}) gönderilenin (${sent}) %90'ından az; kısmi ölçüm.`);
+    console.log(
+      `Kabul ("p95 < 50 ms"): ${Number.isFinite(p95) && p95 <= 0.05 ? 'SAĞLANDI' : 'SAĞLANMADI/belirsiz'} ` +
+        '(kova içi interpolasyon tahmindir; 50 ms bir kova sınırı olduğundan ≤ 50 ms oranı güvenilirdir).',
+    );
+  } else {
+    console.log(
+      '\nKabul ("p95 işleme < 50 ms"): METRICS_URL verilmediği için KARARLAŞTIRILAMAZ.\n' +
+        '  - "entry" handler girişine kadarki gecikmedir; Lua/Redis işleme süresini içermez.\n' +
+        '  - "seen" işlemeyi içerir ama ~100 ms örnekleme çözünürlüğü nedeniyle 50 ms eşiği için kaba bir üst sınırdır.\n' +
+        '  - Kesin p95 için betiği METRICS_URL (+ METRICS_TOKEN) ile tekrar çalıştırın (bkz. dosya başı, madde 3).',
+    );
+  }
 }
 
 main()

@@ -94,11 +94,14 @@ describe('POST /auth/logout (tüm cihazlardan çıkış)', () => {
     expect((await t.http().post('/auth/logout').set('Authorization', bearer(d.tokens.accessToken))).status).toBe(401);
   });
 
-  it('yönetici çıkışı desteklenmez (400): oturum ADMIN_TOKEN_VERSION ile iptal edilir', async () => {
-    const res = await t.http().post('/auth/logout').set('Authorization', bearer(await t.adminToken()));
-    expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_ERROR' } });
-    // Yönetici oturumu etkilenmemiş olmalı.
-    expect((await t.http().get('/admin/drivers').set('Authorization', bearer(await t.adminToken()))).status).toBe(200);
+  it('yönetici çıkışı admin access ve refresh tokenlarını iptal eder', async () => {
+    const a = await t.loginAdmin();
+    const out = await t.http().post('/auth/logout').set('Authorization', bearer(a.accessToken));
+    expect(out.status).toBe(200);
+    expect((await t.http().get('/admin/drivers').set('Authorization', bearer(a.accessToken))).status).toBe(401);
+    expect((await t.http().post('/auth/refresh').send({ refreshToken: a.refreshToken })).status).toBe(401);
+    // Yeniden giriş çalışır.
+    const b = await t.loginAdmin();
+    expect((await t.http().get('/admin/drivers').set('Authorization', bearer(b.accessToken))).status).toBe(200);
   });
 });

@@ -16,6 +16,7 @@ import { createApp } from '../../src/app';
 import { createGracefulShutdown, type GracefulShutdown } from '../../src/lifecycle';
 import { createAuthLimiters } from '../../src/auth/limits';
 import { hashPassword } from '../../src/auth/password';
+import { redisAdminSession } from '../../src/auth/admin-session';
 import type { AuthDeps } from '../../src/auth/service';
 import { createDb } from '../../src/db';
 import { createPresence } from '../../src/presence/service';
@@ -68,7 +69,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   const deps: AuthDeps = {
     db,
     secrets: { accessSecret: 'a'.repeat(40), refreshSecret: 'r'.repeat(40) },
-    admin: { username: ADMIN_USERNAME, passwordHash: await hashPassword(ADMIN_PASSWORD), tokenVersion: 0 },
+    admin: { username: ADMIN_USERNAME, passwordHash: await hashPassword(ADMIN_PASSWORD), tokenVersion: 0, sessionVersion: redisAdminSession(redis) },
   };
 
   const authLimiters = createAuthLimiters(
@@ -100,6 +101,8 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     isShuttingDown: () => shutdownCtl?.isShuttingDown() ?? false,
     // /metrics tokensız her ortamda 404'tür; testler okuyabilsin diye varsayılan açık (token/404 testleri ezer).
     metricsAllowAnon: true,
+    // Faz 6: tutarlılık raporu Redis'i okur.
+    redis,
     realtime,
     presence,
     rides,
@@ -140,7 +143,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     const plate = uniquePlate();
     const res = await http()
       .post('/auth/driver/register')
-      .send({ fullName: 'Test Şoför', phone: phone.local, password: PASSWORD, plate, licenseNo: 'RUHSAT-1' });
+      .send({ fullName: 'Test Şoför', phone: phone.local, password: PASSWORD, plate, licenseNo: 'RUHSAT-1', kvkkAccepted: true });
     if (res.status !== 201) throw new Error(`şoför kaydı başarısız: ${res.status} ${JSON.stringify(res.body)}`);
     const id = res.body.data.id as string;
     created.drivers.add(id);
@@ -151,7 +154,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
     const username = uniqueUsername();
     const res = await http()
       .post('/auth/stand/register')
-      .send({ name: 'Test Durağı', phone: uniquePhone().local, location, username, password: PASSWORD });
+      .send({ name: 'Test Durağı', phone: uniquePhone().local, location, username, password: PASSWORD, kvkkAccepted: true });
     if (res.status !== 201) throw new Error(`durak kaydı başarısız: ${res.status} ${JSON.stringify(res.body)}`);
     const id = res.body.data.id as string;
     created.stands.add(id);
@@ -159,6 +162,13 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   }
 
   let adminAccess: string | undefined;
+  /** Her çağrıda yeni admin girişi yapar ve adminToken() önbelleğini günceller. */
+  async function loginAdmin() {
+    const res = await http().post('/auth/login').send({ role: 'admin', username: ADMIN_USERNAME, password: ADMIN_PASSWORD });
+    if (res.status !== 200) throw new Error(`admin girişi başarısız: ${res.status} ${JSON.stringify(res.body)}`);
+    adminAccess = res.body.data.accessToken as string;
+    return res.body.data as { accessToken: string; refreshToken: string };
+  }
   async function adminToken() {
     if (!adminAccess) {
       const res = await http().post('/auth/login').send({ role: 'admin', username: ADMIN_USERNAME, password: ADMIN_PASSWORD });
@@ -304,7 +314,7 @@ export async function startTestApp(opts: StartTestAppOptions = {}) {
   return {
     url, deps, db, pool, redis, presence, realtime, rides, io, http,
     registerDriver, registerStand, approvedDriver, approvedStand,
-    adminToken, adminAction, loginDriver, loginStand,
+    adminToken, loginAdmin, adminAction, loginDriver, loginStand,
     socket, connectOk, connectError, cleanup, close, kill, shutdown, httpServer,
   };
 }

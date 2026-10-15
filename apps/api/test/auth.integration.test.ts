@@ -154,7 +154,7 @@ describe('giriş ve kayıt', () => {
     const plate = uniquePlate();
     const spaced = `${plate.slice(0, 2)} ${plate.slice(2, 5).toLowerCase()} ${plate.slice(5)}`;
     const res = await t.http().post('/auth/driver/register')
-      .send({ fullName: 'Norm Test', phone: phone.local, password: PASSWORD, plate: spaced, licenseNo: 'RUHSAT-2' });
+      .send({ fullName: 'Norm Test', phone: phone.local, password: PASSWORD, plate: spaced, licenseNo: 'RUHSAT-2', kvkkAccepted: true });
     expect(res.status).toBe(201);
     // Temizlik için hesabı kaydet: aynı telefonla helper üzerinden değil doğrudan kaydedildi.
     const row = await t.db.selectFrom('drivers').select(['phone', 'plate']).where('id', '=', res.body.data.id).executeTakeFirstOrThrow();
@@ -166,13 +166,13 @@ describe('giriş ve kayıt', () => {
     const d = await t.registerDriver();
 
     const samePhone = await t.http().post('/auth/driver/register').send({
-      fullName: 'Kopya', phone: d.phone.e164, password: PASSWORD, plate: uniquePlate(), licenseNo: 'RUHSAT-3',
+      fullName: 'Kopya', phone: d.phone.e164, password: PASSWORD, plate: uniquePlate(), licenseNo: 'RUHSAT-3', kvkkAccepted: true,
     });
     expect(samePhone.status).toBe(409);
     expect(samePhone.body).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
 
     const samePlate = await t.http().post('/auth/driver/register').send({
-      fullName: 'Kopya', phone: uniquePhone().local, password: PASSWORD, plate: d.plate.toLowerCase(), licenseNo: 'RUHSAT-3',
+      fullName: 'Kopya', phone: uniquePhone().local, password: PASSWORD, plate: d.plate.toLowerCase(), licenseNo: 'RUHSAT-3', kvkkAccepted: true,
     });
     expect(samePlate.status).toBe(409);
     expect(samePlate.body.error.code).toBe('CONFLICT');
@@ -180,7 +180,7 @@ describe('giriş ve kayıt', () => {
     const s = await t.registerStand();
     const sameUser = await t.http().post('/auth/stand/register').send({
       name: 'Kopya Durak', phone: uniquePhone().local, location: { lat: 41, lng: 29 },
-      username: s.username.toUpperCase(), password: PASSWORD,
+      username: s.username.toUpperCase(), password: PASSWORD, kvkkAccepted: true,
     });
     expect(sameUser.status).toBe(409);
     expect(sameUser.body.error.code).toBe('CONFLICT');

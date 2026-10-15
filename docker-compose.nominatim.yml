@@ -1,0 +1,17 @@
+# İsteğe bağlı: kendi Nominatim sunucusu (Türkiye OSM). Kullanım:
+#   docker compose -f docker-compose.nominatim.yml up -d
+# İlk içe aktarma saatler sürer ve ≥ 8 GB RAM, ~30 GB disk ister. Ayrıntı: docs/ops/nominatim.md
+services:
+  nominatim:
+    image: mediagis/nominatim:4.4
+    ports: ["8088:8080"]
+    environment:
+      PBF_URL: https://download.geofabrik.de/europe/turkey-latest.osm.pbf
+      REPLICATION_URL: https://download.geofabrik.de/europe/turkey-updates/
+      NOMINATIM_PASSWORD: change-me
+      IMPORT_STYLE: address
+      THREADS: 4
+    volumes: ["nominatim-data:/var/lib/postgresql/14/main"]
+    shm_size: 1gb
+volumes:
+  nominatim-data:

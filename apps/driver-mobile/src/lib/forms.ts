@@ -29,10 +29,12 @@ export type RegisterForm = {
   licenseNo: string;
   vehicleModel: string;
   vehicleColor: string;
+  kvkk: boolean;
 };
 export type RegisterErrors = Partial<Record<keyof RegisterForm, string>>;
 
 const REGISTER_MESSAGES: Record<keyof RegisterForm, string> = {
+  kvkk: T.register.errKvkk,
   fullName: T.register.errFullName,
   phone: T.login.errPhoneFormat,
   password: T.register.errPassword,
@@ -54,11 +56,12 @@ export function validateRegister(
     licenseNo: f.licenseNo,
     vehicleModel: opt(f.vehicleModel),
     vehicleColor: opt(f.vehicleColor),
+    kvkkAccepted: f.kvkk ? true : undefined,
   });
   if (r.success) return { ok: true, input: r.data };
   const errors: RegisterErrors = {};
   for (const issue of r.error.issues) {
-    const k = issue.path[0];
+    const k = issue.path[0] === 'kvkkAccepted' ? 'kvkk' : issue.path[0];
     if (typeof k === 'string' && k in REGISTER_MESSAGES) {
       const key = k as keyof RegisterForm;
       errors[key] ??= REGISTER_MESSAGES[key];

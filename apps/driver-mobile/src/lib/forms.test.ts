@@ -27,13 +27,17 @@ describe('kayıt formu', () => {
     licenseNo: 'R-12345',
     vehicleModel: '',
     vehicleColor: '  ',
+    kvkk: true,
   };
   it('geçerli girdiyi sözleşmeye göre normalize eder, boş isteğe bağlı alanları atar', () => {
     const r = validateRegister(ok);
     expect(r).toEqual({
       ok: true,
-      input: { fullName: 'Mehmet Yılmaz', phone: '+905321234567', password: 'gizli-sifre', plate: '34ABC123', licenseNo: 'R-12345' },
+      input: { fullName: 'Mehmet Yılmaz', phone: '+905321234567', password: 'gizli-sifre', plate: '34ABC123', licenseNo: 'R-12345', kvkkAccepted: true },
     });
+  });
+  it('KVKK onayı olmadan reddeder', () => {
+    expect(validateRegister({ ...ok, kvkk: false })).toEqual({ ok: false, errors: { kvkk: T.register.errKvkk } });
   });
   it('her alan için tek hata', () => {
     const r = validateRegister({ ...ok, fullName: 'M', password: 'kisa', plate: 'XX', licenseNo: '1', vehicleModel: 'x'.repeat(81) });

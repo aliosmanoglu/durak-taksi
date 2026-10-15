@@ -66,6 +66,13 @@
         }
       ],
       "./plugins/with-nav-queries"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "27d56255-52f6-41b0-8650-efe5ee04956f"
+      }
+    },
+    "owner": "alihaydarosmanoglu"
   }
 }
