@@ -1,5 +1,6 @@
 // expo-location sarmalayıcıları ve arka plan konum görevi. Koordinatlar loglanmaz.
 import { Platform } from 'react-native';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { GO_ONLINE_FIX_TIMEOUT_MS, LOCATION_INTERVAL_MS } from '@/lib/constants';
@@ -9,6 +10,14 @@ import { T } from '@/lib/texts';
 import { colors } from '@/lib/theme';
 
 export const LOCATION_TASK = 'duraknet-location';
+
+/**
+ * Expo Go arka plan konum görevini (startLocationUpdatesAsync) desteklemez. YALNIZCA geliştirme kolaylığı için
+ * Expo Go'da ön plan izlemesine (watchPositionAsync) düşülür: uygulama açıkken konum gider, arka planda gitmez.
+ * Development/production build'lerde bu yol hiç kullanılmaz.
+ */
+const IS_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+let foregroundSub: Location.LocationSubscription | null = null;
 
 type LocationListener = (fix: Fix) => void;
 let listener: LocationListener | null = null;
@@ -101,6 +110,7 @@ export async function getLastKnownFix(): Promise<Fix | null> {
 }
 
 export async function isTracking(): Promise<boolean> {
+  if (IS_EXPO_GO) return foregroundSub !== null;
   try {
     return await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
   } catch {
@@ -115,6 +125,15 @@ export async function isTracking(): Promise<boolean> {
 export async function startTracking(): Promise<boolean> {
   try {
     if (await isTracking()) return true;
+    if (IS_EXPO_GO) {
+      foregroundSub = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, timeInterval: LOCATION_INTERVAL_MS, distanceInterval: 0 },
+        (loc) => {
+          if (listener) listener(toFix(loc));
+        },
+      );
+      return true;
+    }
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
       accuracy: Location.Accuracy.High,
       timeInterval: LOCATION_INTERVAL_MS,
@@ -137,6 +156,11 @@ export async function startTracking(): Promise<boolean> {
 }
 
 export async function stopTracking(): Promise<void> {
+  if (IS_EXPO_GO) {
+    foregroundSub?.remove();
+    foregroundSub = null;
+    return;
+  }
   try {
     if (await isTracking()) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
   } catch (e) {
